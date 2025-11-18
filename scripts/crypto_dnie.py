@@ -110,37 +110,41 @@ def load_identity_dnie(pin: str) -> Identity:
             else:
                 raise ValueError(f"Error en login (código {hex(e.rv)}): {e}. Verifica PIN, estado del DNIe y drivers.")
         
-        # Obtener certificados (labels comunes en español: 'Certificado de autenticación DNIe', 'Certificado de firma electrónica DNIe', 'CertAut', 'CertSign')
-        cert_objects = session.get_objects({pkcs11.Attribute.CLASS: pkcs11.ObjectClass.CERTIFICATE})
-        print(f"Certificados encontrados ({len(cert_objects)}):")  # Debug
-        for obj in cert_objects:
+        # Obtener certificados X.509 (filtrar por tipo para evitar objetos no-cert)
+        cert_template = {
+            pkcs11.Attribute.CLASS: pkcs11.ObjectClass.CERTIFICATE,
+            pkcs11.Attribute.CERTIFICATE_TYPE: 0  # X.509
+        }
+        cert_objects = session.get_objects(cert_template)
+        print(f"Certificados X.509 encontrados ({len(cert_objects)}):")  # Debug
+        for i, obj in enumerate(cert_objects):
             label = obj.get(pkcs11.Attribute.LABEL, b'').decode('utf-8', errors='ignore')
-            print(f"  - Label: '{label}'")  # Debug simplificado, omite ID si no necesario
+            value_len = len(obj.get(pkcs11.Attribute.VALUE, b''))
+            print(f"  {i}: Label: '{label}', Tamaño VALUE: {value_len} bytes")  # Debug con tamaño
+        if not cert_objects:
+            raise ValueError("Ningún certificado X.509 encontrado. Ver debug arriba; verifica estado del DNIe.")
+        
         auth_cert = None
-        signing_cert = None
         for obj in cert_objects:
             label = obj.get(pkcs11.Attribute.LABEL, b'').decode('utf-8', errors='ignore').upper()
             # Keywords ampliados para DNIe español
             if any(kw in label for kw in ['AUT', 'AUTH', 'AUTENTICACION', 'AUTHENTICATION', 'CERTIFICADO DE AUTENTICACIÓN', 'DNI AUT']):
                 auth_cert = obj
-                print(f"Cert auth seleccionado: '{label}'")  # Debug
-                break  # Toma el primero que coincida
-        for obj in cert_objects:
-            label = obj.get(pkcs11.Attribute.LABEL, b'').decode('utf-8', errors='ignore').upper()
-            if any(kw in label for kw in ['SIGN', 'FIRMA', 'SIGNATURE', 'CERTIFICADO DE FIRMA', 'DNI FIR']):
-                signing_cert = obj
-                print(f"Cert sign seleccionado: '{label}'")  # Debug
+                print(f"Cert auth seleccionado por label: '{label}'")  # Debug
                 break
-        
+        # Fallback: Selecciona el cert más grande (típicamente auth es ~1KB, otros más pequeños)
         if not auth_cert:
-            # Fallback: Toma el primer cert si no coincide label (a veces no tienen label claro)
-            if cert_objects:
-                auth_cert = cert_objects[0]
-                print(f"Fallback: Usando primer cert como auth: '{auth_cert.get(pkcs11.Attribute.LABEL, b'').decode('utf-8', errors='ignore')}'")
-            else:
-                raise ValueError("Ningún certificado encontrado. Ver debug arriba; verifica estado del DNIe.")
+            cert_sizes = [(obj, len(obj.get(pkcs11.Attribute.VALUE, b''))) for obj in cert_objects]
+            auth_cert = max(cert_sizes, key=lambda x: x[1])[0]
+            label = auth_cert.get(pkcs11.Attribute.LABEL, b'').decode('utf-8', errors='ignore')
+            print(f"Fallback: Cert auth por tamaño (mayor): '{label}' ({len(auth_cert.get(pkcs11.Attribute.VALUE, b''))} bytes)")
         
+        # Verificar y obtener VALUE
+        if pkcs11.Attribute.VALUE not in auth_cert:
+            raise ValueError(f"Objeto seleccionado no tiene atributo VALUE: {auth_cert}")
         cert_der = auth_cert[pkcs11.Attribute.VALUE]
+        if len(cert_der) < 100:  # Cert DER mínimo ~100 bytes
+            raise ValueError(f"VALUE demasiado corto ({len(cert_der)} bytes); no es un cert válido.")
         x509_cert = x509.load_der_x509_certificate(cert_der)
         cn_attrs = x509_cert.subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)
         alias = cn_attrs[0].value if cn_attrs else x509_cert.subject.rfc4514_string()[:20] or "Usuario DNIe"
@@ -150,13 +154,20 @@ def load_identity_dnie(pin: str) -> Identity:
             format=serialization.PublicFormat.UncompressedPoint
         )
         
-        # Obtener claves privadas (a menudo sin label, buscar por ID: b'\x01' auth, b'\x02' sign)
-        priv_objects = session.get_objects({pkcs11.Attribute.CLASS: pkcs11.ObjectClass.PRIVATE_KEY})
-        print(f"Claves privadas encontradas ({len(priv_objects)}):")  # Debug
-        for obj in priv_objects:
+        # Obtener claves privadas EC (filtrar por key type EC)
+        priv_template = {
+            pkcs11.Attribute.CLASS: pkcs11.ObjectClass.PRIVATE_KEY,
+            pkcs11.Attribute.KEY_TYPE: pkcs11.KeyType.EC
+        }
+        priv_objects = session.get_objects(priv_template)
+        print(f"Claves privadas EC encontradas ({len(priv_objects)}):")  # Debug
+        for i, obj in enumerate(priv_objects):
             label = obj.get(pkcs11.Attribute.LABEL, b'').decode('utf-8', errors='ignore')
             obj_id = obj.get(pkcs11.Attribute.ID, b'')
-            print(f"  - Label: '{label}', ID: {obj_id}")  # Debug con ID
+            print(f"  {i}: Label: '{label}', ID: {obj_id}")  # Debug con ID
+        if not priv_objects:
+            raise ValueError("Ninguna clave privada EC encontrada. DNIe debería tener al menos 2.")
+        
         auth_priv = None
         signing_priv = None
         # Primero por label
@@ -187,19 +198,21 @@ def load_identity_dnie(pin: str) -> Identity:
                     signing_priv = obj
                     print("Clave sign por ID b'\\x02'")
                     break
-        # Último fallback: Primera clave privada como auth, segunda como sign si hay al menos 2
-        if not auth_priv and priv_objects:
+        # Último fallback: Primera como auth, segunda como sign si hay al menos 2
+        if not auth_priv:
             auth_priv = priv_objects[0]
-            print("Fallback: Primera clave como auth")
+            print(f"Fallback: Primera clave EC como auth: Label '{auth_priv.get(pkcs11.Attribute.LABEL, b'').decode('utf-8', errors='ignore')}'")
         if not signing_priv and len(priv_objects) > 1:
             signing_priv = priv_objects[1]
-            print("Fallback: Segunda clave como sign")
+            print(f"Fallback: Segunda clave EC como sign: Label '{signing_priv.get(pkcs11.Attribute.LABEL, b'').decode('utf-8', errors='ignore')}'")
+        elif not signing_priv:
+            signing_priv = auth_priv  # Si solo una, úsala para ambos (no ideal, pero para test)
+            print("Advertencia: Solo una clave; usándola para auth y sign.")
         
-        if not auth_priv:
-            raise ValueError("Clave privada de autenticación no encontrada. Ver debug arriba (IDs típicos: b'\\x01'). Ajusta si needed.")
-        
-        if not signing_priv:
-            raise ValueError("Clave privada de firma no encontrada. Ver debug arriba (IDs típicos: b'\\x02'). Ajusta si needed.")
+        # Verificar atributos básicos para claves
+        for priv_key, name in [(auth_priv, 'auth'), (signing_priv, 'sign')]:
+            if not hasattr(priv_key, 'sign') and not hasattr(priv_key, 'derive_key'):
+                raise ValueError(f"Clave {name} no soporta operaciones cripto (no derive/sign).")
         
         print(f"DNIe cargado exitosamente: {alias} (FP: {fingerprint(static_pub_bytes)[:8]})")
         return Identity(auth_priv, static_pub_bytes, alias, cert_der, signing_priv, session, lib)
