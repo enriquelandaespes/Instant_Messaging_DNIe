@@ -57,7 +57,9 @@ SECP256R1_OID = b'\x06\x08\x2a\x86\x48\xce\x3d\x03\x01\x07'
 
 # Códigos PKCS#11 para errores comunes
 CKR_PIN_INCORRECT = 0xA0
-CKR_TOKEN_NOT_PRESENT = 0x50  # Ejemplo para no token; puede variar
+CKR_PIN_LOCKED = 0xA4
+CKR_TOKEN_NOT_PRESENT = 0x50
+CKR_TOKEN_NOT_RECOGNIZED = 0x51
 
 # =====================================================================
 # 1. IDENTIDAD con DNIe (requerida, sin fallback local)
@@ -81,39 +83,51 @@ def load_identity_dnie(pin: str) -> Identity:
         lib = pkcs11.lib(PKCS11_DLL)
         lib.initialize()
         
-        # Buscar token DNIe
+        # Buscar token DNIe (labels comunes: 'DNIe', 'DNI', 'DNI electrónico')
         tokens = lib.get_tokens()
+        print(f"Tokens encontrados: {[t.label for t in tokens]}")  # Debug: muestra labels
         dni_token = None
         for token in tokens:
-            if any(kw in token.label.upper() for kw in ['DNI', 'DNIE']):
+            label_upper = token.label.upper()
+            if any(kw in label_upper for kw in ['DNI', 'DNIE', 'ELECTRÓNICO']):
                 dni_token = token
+                print(f"Token DNIe seleccionado: {token.label}")  # Debug
                 break
         if not dni_token:
-            raise ValueError("No se encontró token DNIe. Verifica lector y DNI insertado.")
+            raise ValueError(f"No se encontró token DNIe. Tokens disponibles: {[t.label for t in tokens]}. Verifica lector y DNI insertado.")
         
         # Abrir sesión y login
         session = dni_token.open()
         try:
             session.login(pkcs11.UserType.USER, pin)
+            print("Login exitoso.")  # Debug
         except pkcs11.PKCS11Error as e:
             if e.rv == CKR_PIN_INCORRECT:
-                raise ValueError(f"PIN incorrecto (código {e.rv}). Intenta de nuevo (máx. 3 intentos antes de bloqueo).")
+                raise ValueError(f"PIN incorrecto (código {hex(e.rv)}). Verifica el PIN de autenticación del DNIe (4-8 dígitos).")
+            elif e.rv == CKR_PIN_LOCKED:
+                raise ValueError(f"PIN bloqueado (código {hex(e.rv)}). El DNIe está bloqueado tras múltiples intentos erróneos; contacta policía para desbloqueo.")
             else:
-                raise ValueError(f"Error en login (código {e.rv}): {e}. Verifica PIN y estado del DNIe.")
+                raise ValueError(f"Error en login (código {hex(e.rv)}): {e}. Verifica PIN, estado del DNIe y drivers.")
         
-        # Obtener certificados (buscar por atributos comunes; labels típicos: 'CertAut', 'CertSign')
+        # Obtener certificados (labels comunes: 'CertAut', 'Certificado de Autenticación DNIe', 'CertSign', 'Certificado de Firma DNIe')
         cert_objects = session.get_objects({pkcs11.Attribute.CLASS: pkcs11.ObjectClass.CERTIFICATE})
+        print(f"Certificados encontrados ({len(cert_objects)}):")  # Debug
+        for obj in cert_objects:
+            label = obj.get(pkcs11.Attribute.LABEL, b'').decode('utf-8', errors='ignore')
+            print(f"  - Label: '{label}', ID: {obj[pkcs11.Attribute.ID] if pkcs11.Attribute.ID in obj else 'N/A'}")  # Debug
         auth_cert = None
         signing_cert = None
         for obj in cert_objects:
             label = obj.get(pkcs11.Attribute.LABEL, b'').decode('utf-8', errors='ignore').upper()
-            if any(kw in label for kw in ['AUT', 'AUTH', 'AUTENTICACION']):
+            if any(kw in label for kw in ['AUT', 'AUTH', 'AUTENTICACION', 'AUTHENTICATION']):
                 auth_cert = obj
-            if any(kw in label for kw in ['SIGN', 'FIRMA']):
+                print(f"Cert auth seleccionado: {label}")  # Debug
+            if any(kw in label for kw in ['SIGN', 'FIRMA', 'SIGNATURE']):
                 signing_cert = obj
+                print(f"Cert sign seleccionado: {label}")  # Debug
         
         if not auth_cert:
-            raise ValueError("Certificado de autenticación no encontrado (busca 'CertAut' o similar).")
+            raise ValueError("Certificado de autenticación no encontrado. Labels comunes: 'CertAut', 'Certificado de Autenticación'. Ver debug arriba.")
         
         cert_der = auth_cert[pkcs11.Attribute.VALUE]
         x509_cert = x509.load_der_x509_certificate(cert_der)
@@ -125,24 +139,46 @@ def load_identity_dnie(pin: str) -> Identity:
             format=serialization.PublicFormat.UncompressedPoint
         )
         
-        # Obtener claves privadas
+        # Obtener claves privadas (buscar por label o ID común)
         priv_objects = session.get_objects({pkcs11.Attribute.CLASS: pkcs11.ObjectClass.PRIVATE_KEY})
+        print(f"Claves privadas encontradas ({len(priv_objects)}):")  # Debug
+        for obj in priv_objects:
+            label = obj.get(pkcs11.Attribute.LABEL, b'').decode('utf-8', errors='ignore')
+            print(f"  - Label: '{label}', ID: {obj[pkcs11.Attribute.ID] if pkcs11.Attribute.ID in obj else 'N/A'}")  # Debug
         auth_priv = None
         signing_priv = None
         for obj in priv_objects:
             label = obj.get(pkcs11.Attribute.LABEL, b'').decode('utf-8', errors='ignore').upper()
-            if any(kw in label for kw in ['AUT', 'AUTH', 'AUTENTICACION']):
+            if any(kw in label for kw in ['AUT', 'AUTH', 'AUTENTICACION', 'AUTHENTICATION']):
                 auth_priv = obj
-            if any(kw in label for kw in ['SIGN', 'FIRMA']):
+                print(f"Clave auth seleccionada: {label}")  # Debug
+            if any(kw in label for kw in ['SIGN', 'FIRMA', 'SIGNATURE']):
                 signing_priv = obj
+                print(f"Clave sign seleccionada: {label}")  # Debug
+        
+        # Fallback por ID si labels no coinciden (común: ID b'01' para auth, b'02' para sign)
+        if not auth_priv:
+            for obj in priv_objects:
+                obj_id = obj.get(pkcs11.Attribute.ID, b'')
+                if obj_id == b'01':  # ID típico para auth
+                    auth_priv = obj
+                    print("Clave auth por ID b'01'")
+                    break
+        if not signing_priv:
+            for obj in priv_objects:
+                obj_id = obj.get(pkcs11.Attribute.ID, b'')
+                if obj_id == b'02':  # ID típico para sign
+                    signing_priv = obj
+                    print("Clave sign por ID b'02'")
+                    break
         
         if not auth_priv:
-            raise ValueError("Clave privada de autenticación no encontrada.")
+            raise ValueError("Clave privada de autenticación no encontrada. Ver debug arriba; ajusta keywords si needed.")
         
         if not signing_priv:
-            raise ValueError("Clave privada de firma no encontrada.")
+            raise ValueError("Clave privada de firma no encontrada. Ver debug arriba; ajusta keywords si needed.")
         
-        print(f"DNIe cargado exitosamente: {alias}")
+        print(f"DNIe cargado exitosamente: {alias} (FP: {fingerprint(static_pub_bytes)[:8]})")
         return Identity(auth_priv, static_pub_bytes, alias, cert_der, signing_priv, session, lib)
     
     except pkcs11.PKCS11Error as e:
@@ -154,10 +190,10 @@ def load_identity_dnie(pin: str) -> Identity:
                 pass
         if lib:
             lib.finalize()
-        if e.rv == CKR_TOKEN_NOT_PRESENT:
-            raise ValueError(f"Token DNIe no presente/detectado (código {e.rv}): {e}. Verifica lector, DNI insertado y drivers PKCS#11.")
+        if e.rv == CKR_TOKEN_NOT_PRESENT or e.rv == CKR_TOKEN_NOT_RECOGNIZED:
+            raise ValueError(f"Token DNIe no presente/reconocido (código {hex(e.rv)}): {e}. Verifica lector, DNI insertado y drivers (instala middleware FNMT).")
         else:
-            raise ValueError(f"Error PKCS#11 (código {e.rv}): {e}. Verifica DLL y drivers.")
+            raise ValueError(f"Error PKCS#11 (código {hex(e.rv)}): {e}. Verifica DLL y drivers.")
     except Exception as e:
         if session:
             try:
@@ -782,25 +818,31 @@ class ChatTUI:
                     await self.refresh_task
 
 # =====================================================================
-# 10. MAIN (requiere DNIe; sale si falla)
+# 10. MAIN (requiere DNIe; sale si falla, con múltiples intentos PIN)
 # =====================================================================
 
 async def main():
     identity = None
-    try:
-        pin = getpass("Introduce PIN DNIe: ")
-        identity = load_identity_dnie(pin)
-    except ValueError as e:
-        print(f"\n=== FALLO EN DNIe ===")
-        print(f"Error: {e}")
-        print("\nVerifica y soluciona:")
-        print("- Lector de tarjetas conectado y DNIe insertado correctamente.")
-        print("- Drivers y middleware DNIe instalados (descarga desde: https://www.sede.fnmt.gob.es/downloads).")
-        print("- DLL PKCS#11 correcta (ajusta PKCS11_DLL en el código si usas otro lector, ej: MultiCard o OpenSC).")
-        print("- PIN de autenticación del DNIe correcto (no el SO-PIN; máx. 3 intentos).")
-        print("- Para debug: Instala OpenSC y ejecuta 'pkcs11-tool --module eTPKCS11.dll --list-slots' para ver tokens/certs.")
-        print("\nSi persiste, pega el error completo para más ayuda.")
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            pin = getpass(f"Introduce PIN DNIe (intento {attempt}/{max_attempts}): ")
+            identity = load_identity_dnie(pin)
+            break
+        except ValueError as e:
+            print(f"\n{e}")
+            if "PIN incorrecto" in str(e) and attempt < max_attempts:
+                print("Intenta de nuevo...")
+                continue
+            elif "PIN bloqueado" in str(e):
+                print("DNIe bloqueado. Contacta con la policía para desbloqueo.")
+                sys.exit(1)
+            else:
+                raise
+    else:
+        print(f"\nMáximo de intentos ({max_attempts}) alcanzado. Saliendo.")
         sys.exit(1)
+    
     except KeyboardInterrupt:
         sys.exit(0)
     except Exception as e:
@@ -840,4 +882,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        sys.exit(0)
+        sys.exit(0)s
