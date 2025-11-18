@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Instant Messaging with DNIe Identity - CORREGIDO siguiendo exactamente tu código working
+Instant Messaging with DNIe - VERSIÓN FUNCIONAL
+- DNIe: Cert EC para identidad (pub) + Firma RSA
+- ECDH: Solo claves efímeras software (no usa DNIe priv EC)
 """
 
 import asyncio
@@ -21,14 +23,12 @@ from getpass import getpass
 from pathlib import Path
 from typing import Dict, Tuple, Optional, List
 
-# Detección pyscard
 try:
     from smartcard.System import readers
 except ImportError:
     print("pip install pyscard")
     sys.exit()
 
-# Imports PKCS11 exacto de tu working
 from pkcs11 import lib as pkcs11_lib, ObjectClass, Attribute, Mechanism
 from cryptography import x509
 from cryptography.exceptions import InvalidSignature
@@ -36,8 +36,8 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
-from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.backends import default_backend
 
 from zeroconf import ServiceInfo, ServiceStateChange
 from zeroconf.asyncio import AsyncZeroconf, AsyncServiceBrowser, AsyncServiceInfo
@@ -48,17 +48,15 @@ from prompt_toolkit.widgets import TextArea, Frame
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
 
-# Config
 SERVICE_TYPE = "_dni-im._udp.local."
 CONTACTS_DB = Path("contacts.json")
 MESSAGES_DB = Path("messages_signed.json")
 
-# Exacto de tu working
 PKCS11_LIB = r"C:\Program Files\OpenSC Project\OpenSC\pkcs11\opensc-pkcs11.dll"
 SLOT_INDEX = 0
 
 # =====================================================================
-# Detección DNIe
+# Detección
 # =====================================================================
 
 def detectar_dnie():
@@ -77,14 +75,14 @@ def detectar_dnie():
         return False
 
 # =====================================================================
-# Acceso DNIe EXACTO de tu working
+# DNIe: Solo cert + firma (EXACTO tu working)
 # =====================================================================
 
 def obtener_token():
     pkcs11 = pkcs11_lib(PKCS11_LIB)
     slots = pkcs11.get_slots(token_present=True)
     if not slots:
-        raise RuntimeError("No token DNIe.")
+        raise RuntimeError("No token.")
     return slots[SLOT_INDEX].get_token()
 
 def verificar_dnie(pin):
@@ -100,33 +98,30 @@ def obtener_certificado_autenticacion():
     with token.open(rw=True) as session:
         certificados = list(session.get_objects({Attribute.CLASS: ObjectClass.CERTIFICATE}))
         if not certificados:
-            raise RuntimeError("No certificado.")
+            raise RuntimeError("No cert.")
         der = certificados[0][Attribute.VALUE]
         return x509.load_der_x509_certificate(der)
 
 def firmar_con_dni(pin: str, data: bytes) -> bytes:
-    """EXACTO de tu working: keys[1].sign con SHA256_RSA_PKCS"""
+    """EXACTO tu working"""
     token = obtener_token()
     with token.open(user_pin=pin) as session:
         keys = list(session.get_objects({Attribute.CLASS: ObjectClass.PRIVATE_KEY}))
         if not keys:
-            raise RuntimeError("No clave privada.")
-        
-        priv = keys[1]  # RSA sign key
-        
+            raise RuntimeError("No priv.")
+        priv = keys[1]  # RSA
         try:
-            signature = priv.sign(data, mechanism=Mechanism.SHA256_RSA_PKCS)
-            return signature
+            return priv.sign(data, mechanism=Mechanism.SHA256_RSA_PKCS)
         except Exception as e:
-            raise RuntimeError(f"Error firma: {e}")
+            raise RuntimeError(f"Firma error: {e}")
 
 # =====================================================================
-# Identidad
+# Identity: Solo pub del DNIe, NO priv
 # =====================================================================
 
 @dataclass
 class Identity:
-    static_pub_bytes: bytes
+    static_pub_bytes: bytes  # Cert DNIe EC pub
     alias: str
     cert_der: bytes
     signing_cert_der: bytes
@@ -137,14 +132,14 @@ def load_identity_dnie(pin: str) -> Identity:
     try:
         if not verificar_dnie(pin):
             raise ValueError("PIN incorrecto.")
-        print("PIN verificado correctamente.")
+        print("PIN OK.")
         
         x509_auth = obtener_certificado_autenticacion()
         cn_attrs = x509_auth.subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)
         alias = cn_attrs[0].value if cn_attrs else "Usuario DNIe"
         
         static_pub_bytes = x509_auth.public_key().public_bytes(
-            encoding=serialization.Encoding.Raw,
+            encoding=serialization.Encoding.X962,
             format=serialization.PublicFormat.UncompressedPoint
         )
         
@@ -152,18 +147,18 @@ def load_identity_dnie(pin: str) -> Identity:
         with token.open(rw=True) as session:
             cert_objects = list(session.get_objects({Attribute.CLASS: ObjectClass.CERTIFICATE}))
             if len(cert_objects) < 2:
-                raise RuntimeError("Necesito 2 certs (auth/sign).")
+                raise RuntimeError("Necesito 2 certs.")
             auth_der = cert_objects[0][Attribute.VALUE]
             sign_der = cert_objects[1][Attribute.VALUE]
         
-        print(f"DNIe cargado: {alias} (FP: {fingerprint(static_pub_bytes)[:8]})")
+        print(f"DNIe: {alias} (FP: {fingerprint(static_pub_bytes)[:8]})")
         return Identity(static_pub_bytes, alias, auth_der, sign_der, pin, token)
     
     except Exception as e:
-        raise ValueError(f"Error DNIe: {e}")
+        raise ValueError(f"Error: {e}")
 
-def fingerprint(static_pub_bytes: bytes) -> str:
-    return sha256(static_pub_bytes).hexdigest()
+def fingerprint(pub: bytes) -> str:
+    return sha256(pub).hexdigest()
 
 def sign_messages(identity: Identity, data: bytes) -> bytes:
     return firmar_con_dni(identity.pin, data)
@@ -178,7 +173,7 @@ def verify_messages(identity: Identity, data: bytes, signature: bytes) -> bool:
         return False
 
 # =====================================================================
-# Criptografía - CORREGIDO: ECDH con software EC keys (DNIe no soporta ECDH directo)
+# Crypto: ECDH solo ephemeral (sin static de DNIe)
 # =====================================================================
 
 @dataclass
@@ -194,41 +189,17 @@ def hkdf_blake2s(ikm: bytes, info: bytes, length: int = 64) -> bytes:
         info=info,
     ).derive(ikm)
 
-def derive_session_keys_software(our_eph_priv_bytes: bytes, our_static_priv_bytes: bytes,
-                                 peer_static_pub: bytes, peer_eph_pub: bytes, is_initiator: bool) -> SessionKeys:
-    """ECDH en software (DNIe RSA no soporta derive_key EC correctamente con OpenSC)"""
-    from cryptography.hazmat.primitives.asymmetric import ec
-    from cryptography.hazmat.backends import default_backend
-    
-    # Cargar nuestras privadas EC
-    our_eph_priv = ec.derive_private_key(
-        int.from_bytes(our_eph_priv_bytes, 'big'),
-        ec.SECP256R1(),
-        default_backend()
-    )
-    our_static_priv = ec.derive_private_key(
-        int.from_bytes(our_static_priv_bytes, 'big'),
-        ec.SECP256R1(),
-        default_backend()
+def derive_session_keys(our_eph_priv: ec.EllipticCurvePrivateKey,
+                       peer_eph_pub_bytes: bytes, is_initiator: bool) -> SessionKeys:
+    """ECDH simplificado: solo ephemeral (sin static)"""
+    peer_eph_pub = ec.EllipticCurvePublicKey.from_encoded_point(
+        ec.SECP256R1(), peer_eph_pub_bytes
     )
     
-    # Cargar peer publics
-    peer_static_pub_key = ec.EllipticCurvePublicKey.from_encoded_point(
-        ec.SECP256R1(), peer_static_pub
-    )
-    peer_eph_pub_key = ec.EllipticCurvePublicKey.from_encoded_point(
-        ec.SECP256R1(), peer_eph_pub
-    )
+    # Solo ee (ephemeral-ephemeral)
+    shared_secret = our_eph_priv.exchange(ec.ECDH(), peer_eph_pub)
     
-    # ECDH exchanges
-    ss = our_static_priv.exchange(ec.ECDH(), peer_static_pub_key)
-    se = our_static_priv.exchange(ec.ECDH(), peer_eph_pub_key)
-    es = our_eph_priv.exchange(ec.ECDH(), peer_static_pub_key)
-    ee = our_eph_priv.exchange(ec.ECDH(), peer_eph_pub_key)
-    
-    mixed_dh = sorted([se, es], key=lambda b: b)
-    key_material = ss + mixed_dh[0] + mixed_dh[1] + ee
-    okm = hkdf_blake2s(key_material, b"dni-im-v1", 64)
+    okm = hkdf_blake2s(shared_secret, b"dni-im-v1", 64)
     
     if is_initiator:
         return SessionKeys(send_key=okm[:32], recv_key=okm[32:])
@@ -244,7 +215,7 @@ def decrypt(key: bytes, nonce: bytes, ciphertext: bytes) -> bytes:
     return ChaCha20Poly1305(key).decrypt(nonce, ciphertext, b"")
 
 # =====================================================================
-# Protocolo UDP
+# Protocolo
 # =====================================================================
 
 class FrameType(IntEnum):
@@ -262,29 +233,24 @@ def unpack_frame(data: bytes):
     return cid, sid, FrameType(ftype), data[12:]
 
 # =====================================================================
-# Handshake - Genera EC keys en software
+# Handshake
 # =====================================================================
 
-def build_handshake(identity: Identity) -> Tuple[bytes, bytes, bytes]:
-    """Genera eph EC en SOFTWARE (no DNIe), retorna priv_bytes, pub_bytes, payload"""
-    from cryptography.hazmat.primitives.asymmetric import ec
-    from cryptography.hazmat.backends import default_backend
-    
-    # Gen eph EC software
+def build_handshake(identity: Identity) -> Tuple[ec.EllipticCurvePrivateKey, bytes]:
+    """Gen eph EC software"""
     eph_priv = ec.generate_private_key(ec.SECP256R1(), default_backend())
     eph_pub_bytes = eph_priv.public_key().public_bytes(
-        Encoding.X962,
-        PublicFormat.UncompressedPoint
+        serialization.Encoding.X962,
+        serialization.PublicFormat.UncompressedPoint
     )
-    eph_priv_bytes = eph_priv.private_numbers().private_value.to_bytes(32, 'big')
     
     fp = fingerprint(identity.static_pub_bytes)
     alias_key = hkdf_blake2s(fp.encode(), b"alias-key", 32)
     nonce, encrypted = encrypt(alias_key, identity.alias.encode("utf-8"))
     
-    cert_len_bytes = CERT_HEADER.pack(len(identity.cert_der))
-    payload = eph_pub_bytes + cert_len_bytes + identity.cert_der + nonce + encrypted
-    return eph_priv_bytes, eph_pub_bytes, payload
+    cert_len = CERT_HEADER.pack(len(identity.cert_der))
+    payload = eph_pub_bytes + cert_len + identity.cert_der + nonce + encrypted
+    return eph_priv, payload
 
 def parse_handshake(data: bytes):
     eph_pub_len = 65
@@ -293,14 +259,13 @@ def parse_handshake(data: bytes):
     cert_start = eph_pub_len + 2
     cert_end = cert_start + cert_len
     cert_der = data[cert_start:cert_end]
-    nonce_start = cert_end
-    nonce = data[nonce_start:nonce_start + 12]
-    enc_alias = data[nonce_start + 12:]
+    nonce = data[cert_end:cert_end+12]
+    enc_alias = data[cert_end+12:]
     
     x509_cert = x509.load_der_x509_certificate(cert_der)
     static_pub = x509_cert.public_key().public_bytes(
-        Encoding.Raw,
-        PublicFormat.UncompressedPoint
+        serialization.Encoding.X962,
+        serialization.PublicFormat.UncompressedPoint
     )
     return eph_pub, static_pub, nonce, enc_alias, cert_der
 
@@ -338,7 +303,7 @@ def save_contacts(contacts: Dict[str, Contact]):
     shutil.move(str(tmp), str(CONTACTS_DB))
 
 # =====================================================================
-# Sesión - Guarda eph_priv_bytes en lugar de object PKCS11
+# Sesión
 # =====================================================================
 
 @dataclass
@@ -351,10 +316,10 @@ class Session:
     next_stream: int = 1
     complete: bool = False
     is_init: bool = False
-    pending_eph_priv: Optional[bytes] = None  # Bytes, no PKCS11 object
+    pending_eph: Optional[ec.EllipticCurvePrivateKey] = None
 
 # =====================================================================
-# Nodo UDP - Usa derive_session_keys_software
+# UDP Node
 # =====================================================================
 
 class UdpNode(asyncio.DatagramProtocol):
@@ -366,11 +331,6 @@ class UdpNode(asyncio.DatagramProtocol):
         self.sessions: Dict[int, Session] = {}
         self.addr_to_cid: Dict[Tuple[str, int], int] = {}
         self.inbox = asyncio.Queue()
-        # Guardar static_priv_bytes del cert auth (extraer desde pub)
-        # Para ECDH software necesitamos la privada EC, pero DNIe NO expone extractable
-        # SOLUCIÓN: Usamos solo RSA para sign, EC para ECDH generamos en software
-        # Guardamos static_priv_bytes dummy (no se puede extraer de DNIe)
-        self.static_priv_bytes = os.urandom(32)  # Dummy, real está en DNIe pero no extractable
 
     def connection_made(self, transport):
         self.transport = transport
@@ -387,18 +347,15 @@ class UdpNode(asyncio.DatagramProtocol):
 
     async def _handle_handshake(self, cid: int, addr, payload: bytes):
         try:
-            peer_eph_pub, peer_static_pub, nonce, enc_alias, peer_cert_der = parse_handshake(payload)
+            peer_eph_pub, peer_static_pub, nonce, enc_alias, _ = parse_handshake(payload)
             peer_fp = fingerprint(peer_static_pub)
             
             alias_key = hkdf_blake2s(peer_fp.encode(), b"alias-key", 32)
             peer_alias = decrypt(alias_key, nonce, enc_alias).decode("utf-8")
             
             sess = self.sessions.get(cid)
-            if sess and sess.is_init and not sess.complete and sess.pending_eph_priv:
-                keys = derive_session_keys_software(
-                    sess.pending_eph_priv, self.static_priv_bytes,
-                    peer_static_pub, peer_eph_pub, True
-                )
+            if sess and sess.is_init and not sess.complete and sess.pending_eph:
+                keys = derive_session_keys(sess.pending_eph, peer_eph_pub, True)
                 sess.keys = keys
                 sess.peer_static = peer_static_pub
                 sess.peer_fp = peer_fp
@@ -430,12 +387,8 @@ class UdpNode(asyncio.DatagramProtocol):
                 self.sessions[cid] = sess
                 self.addr_to_cid[addr] = cid
             
-            our_eph_priv, our_eph_pub, resp = build_handshake(self.identity)
-            
-            keys = derive_session_keys_software(
-                our_eph_priv, self.static_priv_bytes,
-                peer_static_pub, peer_eph_pub, False
-            )
+            our_eph, resp = build_handshake(self.identity)
+            keys = derive_session_keys(our_eph, peer_eph_pub, False)
             sess.keys = keys
             sess.peer_static = peer_static_pub
             sess.peer_fp = peer_fp
@@ -444,7 +397,7 @@ class UdpNode(asyncio.DatagramProtocol):
             self.transport.sendto(pack_frame(cid, 0, FrameType.HANDSHAKE, resp), addr)
             self.tui.render_contacts()
         except Exception as e:
-            print(f"Error handshake: {e}")
+            print(f"Handshake error: {e}")
 
     async def _handle_data(self, cid: int, sid: int, payload: bytes):
         try:
@@ -470,8 +423,8 @@ class UdpNode(asyncio.DatagramProtocol):
         self.sessions[cid] = sess
         self.addr_to_cid[addr] = cid
         
-        eph_priv, eph_pub, payload = build_handshake(self.identity)
-        sess.pending_eph_priv = eph_priv
+        eph, payload = build_handshake(self.identity)
+        sess.pending_eph = eph
         self.transport.sendto(pack_frame(cid, 0, FrameType.HANDSHAKE, payload), addr)
         
         deadline = time.time() + 5
@@ -496,7 +449,7 @@ class UdpNode(asyncio.DatagramProtocol):
         self.transport.sendto(pack_frame(sess.cid, sid, FrameType.DATA, payload), contact.addr)
 
 # =====================================================================
-# mDNS, TUI, Main (sin cambios)
+# mDNS
 # =====================================================================
 
 class MdnsService:
@@ -569,6 +522,10 @@ class MdnsService:
             await self.azc.async_unregister_service(self.info)
             await self.azc.async_close()
 
+# =====================================================================
+# TUI
+# =====================================================================
+
 @dataclass
 class Message:
     sender: str
@@ -584,19 +541,14 @@ class ChatTUI:
         self.sel = 0
         self.recv_task = None
         self.refresh_task = None
-
         self.chat_history: Dict[str, List[Message]] = self.load_messages()
-
         self.contacts_area = TextArea(focusable=False, scrollbar=True, width=30)
         self.msgs_area = TextArea(focusable=False, scrollbar=True, wrap_lines=True)
         self.input_area = TextArea(height=3, prompt="> ")
-
         self.left = Frame(self.contacts_area, title="Chats")
         self.center = Frame(self.msgs_area, title=alias)
         self.bottom = Frame(self.input_area, title="Input")
-
         root = HSplit([VSplit([self.left, self.center], padding=1), self.bottom])
-
         kb = KeyBindings()
 
         @kb.add("up")
@@ -641,20 +593,17 @@ class ChatTUI:
     def render_chat(self):
         self.render_contacts()
         if not self.contacts:
-            self.msgs_area.text = "Selecciona un chat..."
+            self.msgs_area.text = "Selecciona chat..."
             return
-        
         fp_list = list(self.contacts.keys())
         selected_fp = fp_list[self.sel]
         history = self.chat_history.get(selected_fp, [])
-        
         lines = []
         for msg in history:
             if msg.sender == self.alias:
                 lines.append(f"{msg.text:>50} {msg.sender} ({msg.timestamp})")
             else:
                 lines.append(f"{msg.sender} ({msg.timestamp}): {msg.text}")
-        
         self.msgs_area.text = "\n".join(lines)
         self.app.invalidate()
 
@@ -690,10 +639,7 @@ class ChatTUI:
 
     def save_messages(self):
         try:
-            data_dict = {
-                fp: [asdict(m) for m in msgs]
-                for fp, msgs in self.chat_history.items()
-            }
+            data_dict = {fp: [asdict(m) for m in msgs] for fp, msgs in self.chat_history.items()}
             json_str = json.dumps(data_dict).encode("utf-8")
             signature = sign_messages(self.identity, json_str)
             with MESSAGES_DB.open("wb") as f:
@@ -709,10 +655,8 @@ class ChatTUI:
     async def _on_enter(self):
         text = self.input_area.text.strip()
         self.input_area.buffer.reset()
-        
         if not text:
             return
-        
         if text.startswith("/new "):
             try:
                 _, name, ip_port = text.split(None, 2)
@@ -727,17 +671,13 @@ class ChatTUI:
             except:
                 self.log("* Uso: /new nombre ip:puerto")
             return
-        
         if not self.contacts:
             self.log("* Sin contactos")
             return
-        
         fp_list = list(self.contacts.keys())
         selected_fp = fp_list[self.sel]
         contact = self.contacts[selected_fp]
-        
         self.add_message(selected_fp, self.alias, text)
-        
         await self.node.send_msg(contact, text)
         self.render_chat()
 
@@ -747,14 +687,12 @@ class ChatTUI:
                 fp, msg = await self.node.inbox.get()
                 if fp in self.contacts:
                     self.add_message(fp, self.contacts[fp].name, msg)
-
         async def refresher():
             while True:
                 await asyncio.sleep(1.0)
                 self.render_contacts()
                 if self.app.is_running:
                     self.app.invalidate()
-
         self.recv_task = asyncio.create_task(receiver())
         self.refresh_task = asyncio.create_task(refresher())
         self.render_chat()
@@ -771,6 +709,10 @@ class ChatTUI:
                 with contextlib.suppress(asyncio.CancelledError):
                     await self.refresh_task
 
+# =====================================================================
+# Main
+# =====================================================================
+
 async def main():
     if not detectar_dnie():
         print("No DNIe.")
@@ -778,15 +720,14 @@ async def main():
     print("DNIe detectado.")
     
     identity = None
-    max_attempts = 3
-    for attempt in range(1, max_attempts + 1):
-        pin = getpass(f"PIN DNIe ({attempt}/{max_attempts}): ")
+    for attempt in range(1, 4):
+        pin = getpass(f"PIN ({attempt}/3): ")
         try:
             identity = load_identity_dnie(pin)
             break
         except ValueError as e:
             print(f"\n{e}")
-            if attempt == max_attempts:
+            if attempt == 3:
                 sys.exit(1)
     
     my_fp = fingerprint(identity.static_pub_bytes)
