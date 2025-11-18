@@ -76,6 +76,18 @@ class Identity:
     session: pkcs11.Session  # Sesión PKCS11 abierta
     lib: pkcs11.lib  # Lib para finalize
 
+def get_pkcs11_rv(e: Exception) -> int:
+    """Obtiene el código de retorno PKCS#11 de la excepción de forma segura"""
+    if hasattr(e, 'rv'):
+        return e.rv
+    elif e.args and isinstance(e.args[0], int):
+        return e.args[0]
+    else:
+        # Fallback: Parsea str(e) si contiene hex código (ej: 'CKR_PIN_INCORRECT (0xA0)')
+        import re
+        match = re.search(r'0x([0-9a-fA-F]+)', str(e))
+        return int(match.group(1), 16) if match else 0
+
 def load_identity_dnie(pin: str) -> Identity:
     """Carga identidad desde DNIe via PKCS11; falla si no detecta DNIe"""
     lib = None
@@ -103,12 +115,13 @@ def load_identity_dnie(pin: str) -> Identity:
             session.login(pkcs11.UserType.USER, pin)
             print("Login exitoso.")  # Debug
         except pkcs11.PKCS11Error as e:
-            if e.rv == CKR_PIN_INCORRECT:
-                raise ValueError(f"PIN incorrecto (código {hex(e.rv)}). Verifica el PIN de autenticación del DNIe (4-8 dígitos, configurado al activar).")
-            elif e.rv == CKR_PIN_LOCKED:
-                raise ValueError(f"PIN bloqueado (código {hex(e.rv)}). El DNIe está bloqueado tras múltiples intentos erróneos; contacta policía para desbloqueo.")
+            rv = get_pkcs11_rv(e)
+            if rv == CKR_PIN_INCORRECT:
+                raise ValueError(f"PIN incorrecto (código {hex(rv)}). Verifica el PIN de autenticación del DNIe (4-8 dígitos, configurado al activar).")
+            elif rv == CKR_PIN_LOCKED:
+                raise ValueError(f"PIN bloqueado (código {hex(rv)}). El DNIe está bloqueado tras múltiples intentos erróneos; contacta policía para desbloqueo.")
             else:
-                raise ValueError(f"Error en login (código {hex(e.rv)}): {e}. Verifica PIN, estado del DNIe y drivers.")
+                raise ValueError(f"Error en login (código {hex(rv)}): {e}. Verifica PIN, estado del DNIe y drivers.")
         
         # Obtener certificados X.509 (filtrar por tipo para evitar objetos no-cert)
         cert_template = {
@@ -134,10 +147,17 @@ def load_identity_dnie(pin: str) -> Identity:
                 break
         # Fallback: Selecciona el cert más grande (típicamente auth es ~1KB, otros más pequeños)
         if not auth_cert:
-            cert_sizes = [(obj, len(obj.get(pkcs11.Attribute.VALUE, b''))) for obj in cert_objects]
-            auth_cert = max(cert_sizes, key=lambda x: x[1])[0]
-            label = auth_cert.get(pkcs11.Attribute.LABEL, b'').decode('utf-8', errors='ignore')
-            print(f"Fallback: Cert auth por tamaño (mayor): '{label}' ({len(auth_cert.get(pkcs11.Attribute.VALUE, b''))} bytes)")
+            cert_sizes = []
+            for obj in cert_objects:
+                value_attr = obj.get(pkcs11.Attribute.VALUE)
+                if value_attr:
+                    cert_sizes.append((obj, len(value_attr)))
+            if cert_sizes:
+                auth_cert = max(cert_sizes, key=lambda x: x[1])[0]
+                label = auth_cert.get(pkcs11.Attribute.LABEL, b'').decode('utf-8', errors='ignore')
+                print(f"Fallback: Cert auth por tamaño (mayor): '{label}' ({len(auth_cert[pkcs11.Attribute.VALUE])} bytes)")
+            else:
+                raise ValueError("Ningún certificado con VALUE válido.")
         
         # Verificar y obtener VALUE
         if pkcs11.Attribute.VALUE not in auth_cert:
@@ -209,20 +229,25 @@ def load_identity_dnie(pin: str) -> Identity:
             signing_priv = auth_priv  # Si solo una, úsala para ambos (no ideal, pero para test)
             print("Advertencia: Solo una clave; usándola para auth y sign.")
         
-        # Verificar atributos básicos para claves
+        # Verificar atributos básicos para claves (seguro)
         for priv_key, name in [(auth_priv, 'auth'), (signing_priv, 'sign')]:
-            if not hasattr(priv_key, 'sign') and not hasattr(priv_key, 'derive_key'):
-                raise ValueError(f"Clave {name} no soporta operaciones cripto (no derive/sign).")
+            try:
+                # Intenta acceder a métodos sin ejecutarlos
+                if not (hasattr(priv_key, 'derive_key') or hasattr(priv_key, 'sign')):
+                    raise ValueError(f"Clave {name} no soporta operaciones cripto (no derive/sign).")
+            except AttributeError:
+                raise ValueError(f"Clave {name} inválida (no es un objeto Key PKCS#11).")
         
         print(f"DNIe cargado exitosamente: {alias} (FP: {fingerprint(static_pub_bytes)[:8]})")
         return Identity(auth_priv, static_pub_bytes, alias, cert_der, signing_priv, session, lib)
     
     except pkcs11.PKCS11Error as e:
-        error_msg = f"Error PKCS#11 (código {hex(e.rv)}): {e}"
-        if e.rv == CKR_LIBRARY_FAILED_TO_LOAD:
+        rv = get_pkcs11_rv(e)
+        error_msg = f"Error PKCS#11 (código {hex(rv)}): {e}"
+        if rv == CKR_LIBRARY_FAILED_TO_LOAD:
             error_msg += ". DLL no encontrada o inválida; verifica PKCS11_DLL path y drivers FNMT."
-        elif e.rv == CKR_TOKEN_NOT_PRESENT or e.rv == CKR_TOKEN_NOT_RECOGNIZED:
-            error_msg = f"Token DNIe no presente/reconocido (código {hex(e.rv)}): {e}. Verifica lector, DNI insertado y middleware (descarga: https://www.dnielectronico.es)."
+        elif rv == CKR_TOKEN_NOT_PRESENT or rv == CKR_TOKEN_NOT_RECOGNIZED:
+            error_msg = f"Token DNIe no presente/reconocido (código {hex(rv)}): {e}. Verifica lector, DNI insertado y middleware (descarga: https://www.dnielectronico.es)."
         if session:
             try:
                 session.logout()
@@ -921,4 +946,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n=== ERROR INESPERADO ===")
         print(f"Detalles: {e}")
+        print(f"Tipo de excepción: {type(e).__name__}")
+        print(f"Argumentos: {e.args}")
         sys.exit(1)
