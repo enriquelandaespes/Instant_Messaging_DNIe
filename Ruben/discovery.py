@@ -1,9 +1,28 @@
-# discovery.py
+# Ruben/discovery.py
 import socket
 import asyncio
 from zeroconf import ServiceInfo, ServiceStateChange
 from zeroconf.asyncio import AsyncZeroconf, AsyncServiceBrowser, AsyncServiceInfo
 import config
+
+# --- FUNCIÓN AÑADIDA PARA SACAR LA IP REAL ---
+def get_lan_ip():
+    """
+    Intenta conectar a una IP pública (Google DNS) para ver
+    qué interfaz de red usa el SO para salir a internet.
+    No envía datos reales.
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # No hace falta que 8.8.8.8 sea accesible, solo calcula la ruta
+        s.connect(('8.8.8.8', 80))
+        IP = s.getsockname()[0]
+    except Exception:
+        IP = '127.0.0.1'
+    finally:
+        s.close()
+    return IP
+# ---------------------------------------------
 
 class DiscoveryService:
     def __init__(self, my_port, my_nick, on_peer_found_callback):
@@ -19,8 +38,11 @@ class DiscoveryService:
 
     async def start(self):
         self.azc = AsyncZeroconf()
-        local_ip = socket.gethostbyname(socket.gethostname())
         
+        # CAMBIO AQUÍ: Usamos la función robusta en lugar de gethostname
+        local_ip = get_lan_ip()
+        print(f"[Discovery] Anunciando en la IP: {local_ip}") # Log para que verifiques
+
         # Anunciar
         info = ServiceInfo(
             config.SERVICE_TYPE,
