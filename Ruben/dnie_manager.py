@@ -3,6 +3,8 @@ import sys
 from pkcs11 import lib as pkcs11_lib, ObjectClass, Attribute, Mechanism
 from cryptography.hazmat.primitives.asymmetric import x25519
 from cryptography.hazmat.primitives import serialization
+from cryptography import x509
+from cryptography.hazmat.backends import default_backend
 import config
 
 class DNIeManager:
@@ -44,3 +46,20 @@ class DNIeManager:
 
     def obtener_credenciales(self):
         return self.cert_der, self.firma_cached
+
+    def get_user_name(self):
+        """Extrae el Common Name (CN) del certificado del DNIe."""
+        try:
+            cert = x509.load_der_x509_certificate(self.cert_der, default_backend())
+            # El subject suele tener el formato: CN=APELLIDO1 APELLIDO2, NOMBRE (AUTENTICACIÓN)
+            # O similar. Buscamos el atributo CommonName.
+            cn_attributes = cert.subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)
+            if cn_attributes:
+                full_name = cn_attributes[0].value
+                # Opcional: Limpiar un poco el nombre si es muy largo o tiene info extra
+                # En DNIe suele ser "APELLIDOS NOMBRE (FIRMA)" o "(AUTENTICACIÓN)"
+                return full_name
+        except Exception as e:
+            print(f"Error extrayendo nombre del certificado: {e}")
+        
+        return "Usuario_DNIe"

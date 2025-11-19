@@ -26,7 +26,9 @@ async def main():
         print(f"❌ Error DNIe: {e}")
         return
 
-    nick = input("Elige tu Nick: ").strip() or "Usuario"
+    print("⌛ Obteniendo nombre del certificado...")
+    nick = dnie.get_user_name()
+    print(f"✅ Identificado como: {nick}")
 
     # 3. Inicialización
     loop = asyncio.get_running_loop()
