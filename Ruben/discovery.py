@@ -1,28 +1,20 @@
-# Ruben/discovery.py
+# discovery.py
 import socket
 import asyncio
 from zeroconf import ServiceInfo, ServiceStateChange
 from zeroconf.asyncio import AsyncZeroconf, AsyncServiceBrowser, AsyncServiceInfo
 import config
 
-# --- FUNCIÓN AÑADIDA PARA SACAR LA IP REAL ---
 def get_lan_ip():
-    """
-    Intenta conectar a una IP pública (Google DNS) para ver
-    qué interfaz de red usa el SO para salir a internet.
-    No envía datos reales.
-    """
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    """Obtiene la IP real de la LAN (WiFi/Ethernet)"""
     try:
-        # No hace falta que 8.8.8.8 sea accesible, solo calcula la ruta
-        s.connect(('8.8.8.8', 80))
-        IP = s.getsockname()[0]
-    except Exception:
-        IP = '127.0.0.1'
-    finally:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
         s.close()
-    return IP
-# ---------------------------------------------
+        return ip
+    except:
+        return "127.0.0.1"
 
 class DiscoveryService:
     def __init__(self, my_port, my_nick, on_peer_found_callback):
@@ -31,45 +23,46 @@ class DiscoveryService:
         self.on_peer = on_peer_found_callback
         self.azc = None
         self.browser = None
-        self.seen = set()
+        self.my_ip = get_lan_ip()
         
-        # Generar nombre único
+        # Nombre único para evitar colisiones: Nick_Puerto
         self.my_name = f"{self.nick}_{self.port}.{config.SERVICE_TYPE}"
 
     async def start(self):
+        # Iniciamos Zeroconf en todas las interfaces (por defecto)
         self.azc = AsyncZeroconf()
         
-        # CAMBIO AQUÍ: Usamos la función robusta en lugar de gethostname
-        local_ip = get_lan_ip()
-        print(f"[Discovery] Anunciando en la IP: {local_ip}") # Log para que verifiques
+        print(f"DEBUG: Anunciando en {self.my_ip}")
 
-        # Anunciar
+        # Anunciamos nuestra IP REAL, no localhost
         info = ServiceInfo(
             config.SERVICE_TYPE,
             self.my_name,
-            addresses=[socket.inet_aton(local_ip)],
+            addresses=[socket.inet_aton(self.my_ip)],
             port=self.port,
-            properties={},
+            properties={'version': '1.0'},
         )
         await self.azc.async_register_service(info)
         
-        # Escuchar
+        # Escuchamos
         self.browser = AsyncServiceBrowser(
             self.azc.zeroconf, config.SERVICE_TYPE, handlers=[self._on_change]
         )
 
     def _on_change(self, zeroconf, service_type, name, state_change):
         if state_change is not ServiceStateChange.Added: return
-        if name == self.my_name: return # Ignorarnos
+        if name == self.my_name: return # Ignorarnos a nosotros mismos
         asyncio.create_task(self._resolve(zeroconf, service_type, name))
 
     async def _resolve(self, zeroconf, service_type, name):
         try:
             info = AsyncServiceInfo(service_type, name)
+            # Damos 3 segundos para resolver
             if await info.async_request(zeroconf, 3000) and info.addresses:
                 ip = socket.inet_ntoa(info.addresses[0])
                 port = info.port
-                clean_name = name.split(".")[0] # Limpiar nombre
+                clean_name = name.split(".")[0] 
+                # Avisamos a la GUI
                 self.on_peer(clean_name, ip, port)
         except: pass
 
