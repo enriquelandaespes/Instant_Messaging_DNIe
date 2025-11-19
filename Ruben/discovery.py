@@ -76,11 +76,31 @@ class DiscoveryService:
         try:
             info = AsyncServiceInfo(service_type, name)
             if await info.async_request(zeroconf, 3000) and info.addresses:
-                ip = socket.inet_ntoa(info.addresses[0])
+                ip = None
+                # Priorizar IPv4 (4 bytes)
+                for addr in info.addresses:
+                    if len(addr) == 4:
+                        ip = socket.inet_ntoa(addr)
+                        break
+                
+                if not ip:
+                    print(f"--- [Discovery] No se encontró IPv4 para {name} ---")
+                    return
+
                 port = info.port
-                clean_name = name.split(".")[0] # Limpiar nombre
+                
+                # Limpiar nombre de forma segura: remover el sufijo del tipo de servicio
+                # Se asume que name termina en .SERVICE_TYPE
+                suffix = f".{config.SERVICE_TYPE}"
+                if name.endswith(suffix):
+                    clean_name = name[:-len(suffix)]
+                else:
+                    # Fallback si no coincide exactamente el sufijo
+                    clean_name = name.replace(suffix, "").rstrip(".")
+
                 self.on_peer(clean_name, ip, port)
-        except: pass
+        except Exception as e:
+            print(f"--- [Discovery] Error resolviendo {name}: {e} ---")
 
     async def stop(self):
         if self.browser: await self.browser.async_cancel()
