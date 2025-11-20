@@ -1,106 +1,80 @@
-# json_db.py
+# db.py
 import json
 import os
-import base64
-from datetime import datetime
-from cryptography.fernet import Fernet
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from cryptography.hazmat.backends import default_backend
 
-class JsonEncryptedDB:
-    def __init__(self, dnie_manager, unique_id):
-        self.dnie = dnie_manager
-        self.file_path = f"dnie_chat_{unique_id}.json"
-        
-        print(f"🔐 Inicializando BD cifrada: {self.file_path}")
-        
-        # 1. Derivar clave de cifrado usando una firma del DNIe
-        # Firmamos el nombre del archivo para obtener la clave maestra
-        signature = self.dnie.sign_data(self.file_path.encode())
-        
-        hkdf = HKDF(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=b'json-db-salt',
-            info=b'dnie-json-db',
-            backend=default_backend()
-        )
-        key = base64.urlsafe_b64encode(hkdf.derive(signature))
-        self.cipher = Fernet(key)
-        
-        # 2. Cargar o Crear BD
-        self.data = {
-            "contacts": {}  # Estructura: { "CN": { "ip": "...", "msgs": [...] } }
-        }
-        self.load()
+class DatabaseManager:
+    def __init__(self, filename="db.json"):
+        self.filename = filename
+        self.data = {"contacts": {}, "messages": {}}
+        self._load_data()
 
-    def load(self):
-        if not os.path.exists(self.file_path):
-            return
+    def _load_data(self):
+        if os.path.exists(self.filename):
+            with open(self.filename, 'r') as f:
+                self.data = json.load(f)
+        else:
+            self._save_data() # Create an empty file if it doesn't exist
+
+    def _save_data(self):
+        with open(self.filename, 'w') as f:
+            json.dump(self.data, f, indent=4)
+
+    # --- NUEVA FUNCIÓN ---
+    def add_or_update_contact(self, cn, ip=None, port=None):
+        """
+        Añade un contacto por su CN (nombre del certificado) o actualiza su IP/Puerto.
+        Si el contacto ya existe, actualiza sus datos. Si no, lo crea.
+        Devuelve el CN del contacto gestionado.
+        """
+        contact_data = self.data["contacts"].get(cn, {})
+        contact_data["cn"] = cn # Asegurarse de que el CN está guardado
+        if ip: contact_data["ip"] = ip
+        if port: contact_data["port"] = port
+        self.data["contacts"][cn] = contact_data
+        self._save_data()
+        return cn
+
+    def get_contact_info(self, cn):
+        return self.data["contacts"].get(cn)
+
+    def update_contact_info(self, cn, ip, port):
+        # Esta función puede ser reemplazada por add_or_update_contact
+        # pero la mantenemos por compatibilidad si se usa en otros sitios.
+        if cn in self.data["contacts"]:
+            if ip is not None: self.data["contacts"][cn]["ip"] = ip
+            if port is not None: self.data["contacts"][cn]["port"] = port
+            self._save_data()
+
+    def add_message(self, cn, sender, text, status, timestamp):
+        if cn not in self.data["messages"]:
+            self.data["messages"][cn] = []
         
-        try:
-            with open(self.file_path, 'rb') as f:
-                encrypted_content = f.read()
-            
-            if not encrypted_content: return
+        # Eliminar mensajes si la lista supera un tamaño
+        if len(self.data["messages"][cn]) > 1000: # Limite de 1000 mensajes
+            self.data["messages"][cn].pop(0)
 
-            decrypted_json = self.cipher.decrypt(encrypted_content).decode('utf-8')
-            self.data = json.loads(decrypted_json)
-        except Exception as e:
-            print(f"⚠️ Error cargando BD (posible clave incorrecta o fichero corrupto): {e}")
-
-    def save(self):
-        try:
-            json_str = json.dumps(self.data)
-            encrypted_content = self.cipher.encrypt(json_str.encode('utf-8'))
-            
-            with open(self.file_path, 'wb') as f:
-                f.write(encrypted_content)
-        except Exception as e:
-            print(f"Error guardando BD: {e}")
-
-    def add_message(self, cn, sender, text, status, timestamp=None):
-        if cn not in self.data["contacts"]:
-            self.data["contacts"][cn] = {"msgs": [], "ip": None, "port": None}
-        
-        if not timestamp:
-            timestamp = datetime.now().strftime("%H:%M")
-            
-        msg = {
+        self.data["messages"][cn].append({
             "sender": sender,
             "text": text,
             "status": status, # 'pending', 'sent', 'received'
             "time": timestamp
-        }
-        self.data["contacts"][cn]["msgs"].append(msg)
-        self.save()
-
-    def update_contact_info(self, cn, ip, port):
-        if cn not in self.data["contacts"]:
-            self.data["contacts"][cn] = {"msgs": [], "ip": ip, "port": port}
-        else:
-            self.data["contacts"][cn]["ip"] = ip
-            self.data["contacts"][cn]["port"] = port
-        self.save()
+        })
+        self._save_data()
 
     def get_history(self, cn):
-        if cn in self.data["contacts"]:
-            return self.data["contacts"][cn]["msgs"]
-        return []
+        return self.data["messages"].get(cn, [])
 
     def get_pending_messages(self, cn):
-        if cn not in self.data["contacts"]: return []
-        # Devolvemos índices y mensajes
         pending = []
-        for i, msg in enumerate(self.data["contacts"][cn]["msgs"]):
-            if msg["status"] == "pending":
-                pending.append((i, msg))
+        if cn in self.data["messages"]:
+            for i, msg in enumerate(self.data["messages"][cn]):
+                if msg["status"] == "pending":
+                    pending.append((i, msg))
         return pending
 
-    def mark_as_sent(self, cn, msg_indices):
-        if cn not in self.data["contacts"]: return
-        for i in msg_indices:
-            if i < len(self.data["contacts"][cn]["msgs"]):
-                self.data["contacts"][cn]["msgs"][i]["status"] = "sent"
-        self.save()
+    def mark_as_sent(self, cn, indices):
+        if cn in self.data["messages"]:
+            for i in indices:
+                if i < len(self.data["messages"][cn]):
+                    self.data["messages"][cn][i]["status"] = "sent"
+            self._save_data()

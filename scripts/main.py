@@ -1,75 +1,87 @@
 # main.py
 import asyncio
-import sys
-import config
-import pkcs11 # Necesario para capturar el error de PIN
-from getpass import getpass
+import argparse
+import os
+import signal
+from prompt_toolkit.patch_stdout import patch_stdout
 from dnie_manager import DNIeManager
-from protocol import SecureIMProtocol
 from discovery import DiscoveryService
-from gui import ChatGUI
-from database import JsonEncryptedDB
+from protocol import SecureIMProtocol
+from scripts.gui import ChatGUI
+from db import DatabaseManager
+
+# --- Configuración inicial ---
+# Obtener un puerto aleatorio si no se especifica
+DEFAULT_PORT = 6666 # Puedes cambiar esto si quieres un puerto fijo por defecto
 
 async def main():
-    port = config.UDP_PORT
-    if len(sys.argv) > 1 and sys.argv[1].isdigit():
-        port = int(sys.argv[1])
-    
-    print(f"--- DNIe CHAT (Puerto {port}) ---")
-    
-    try:
-        pin = getpass("Introduce PIN DNIe: ")
-        print("⌛ Accediendo a DNIe...")
-        dnie = DNIeManager(pin)
-        
-        print("⌛ Generando ID único para la Base de Datos...")
-        db_id = dnie.get_unique_id()
-        
-        print("⌛ Obteniendo nombre del usuario...")
-        nick = dnie.get_user_name()
-        print(f"✅ Bienvenido: {nick}")
-        
-        # Inicializar BD JSON Cifrada
-        db = JsonEncryptedDB(dnie, db_id)
+    parser = argparse.ArgumentParser(description="DNIe Secure IM Chat")
+    parser.add_argument("--nick", type=str, required=True, help="Nickname for the chat")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="UDP Port for communication")
+    args = parser.parse_args()
 
-    except pkcs11.exceptions.PinIncorrect:
-        print("\n❌ Error: El PIN introducido es incorrecto.")
-        return
-    except pkcs11.exceptions.CardNotPresent:
-        print("\n❌ Error: No se detecta el DNIe. Insértalo correctamente.")
-        return
-    except Exception as e:
-        print(f"\n❌ Error Crítico: {e}")
-        # import traceback; traceback.print_exc() # Descomentar para depurar
+    print(f"Iniciando DNIe Secure IM con Nick: {args.nick}, Puerto: {args.port}")
+
+    # --- Inicializar DNIe Manager ---
+    dnie_manager = DNIeManager()
+    if not dnie_manager.private_key:
+        print("ERROR: No se pudo cargar el DNIe o acceder a la clave privada.")
         return
 
+    # --- Inicializar Database Manager ---
+    db = DatabaseManager(f"db_{args.nick}.json")
+
+    # --- Inicializar GUI ---
+    # La GUI necesita el protocolo para enviar mensajes/handshakes, pero el protocolo necesita la GUI para callbacks.
+    # Inicializamos la GUI primero con un placeholder para el protocolo.
+    # El protocolo se añadirá más tarde.
+    gui = ChatGUI(protocol=None, my_nick=args.nick, db=db)
+    
+    # --- Inicializar Protocolo ---
     loop = asyncio.get_running_loop()
-    
-    def protocol_cb(addr, text, nombre):
-        gui.on_protocol_msg(addr, text, nombre)
-
-    def discovery_cb(name, ip, p):
-        gui.add_or_update_peer(name, ip, p)
-
-    protocol = SecureIMProtocol(dnie, protocol_cb)
-    gui = ChatGUI(protocol, nick, db)
-    mdns = DiscoveryService(port, nick, discovery_cb)
-
-    transport, _ = await loop.create_datagram_endpoint(
-        lambda: protocol, local_addr=('0.0.0.0', port)
+    transport, protocol_instance = await loop.create_datagram_endpoint(
+        lambda: SecureIMProtocol(dnie_manager, gui.on_protocol_msg),
+        local_addr=('0.0.0.0', args.port)
     )
+    gui.protocol = protocol_instance # Asignar la instancia del protocolo a la GUI
+
+    # --- Inicializar Discovery ---
+    # La función de callback para el discovery cuando se encuentra un peer
+    def on_peer_found(name, ip, port):
+        # El nombre que viene de Zeroconf es 'nick_puerto', gui.py lo gestiona
+        gui.add_or_update_peer(name, ip, port, from_zeroconf=True) 
     
-    await mdns.start()
-    try:
-        await gui.run()
-    finally:
-        await mdns.stop()
-        transport.close()
+    discovery_service = DiscoveryService(args.port, args.nick, on_peer_found)
+    await discovery_service.start()
+
+    # --- Arrancar GUI y manejar interrupciones ---
+    with patch_stdout():
+        # Handle Ctrl+C gracefully
+        loop = asyncio.get_event_loop()
+        stop_event = asyncio.Event()
+
+        # Handle Ctrl+C for Windows and Linux
+        if os.name == 'nt': # Windows
+            pass # Windows doesn't easily support signal.SIGINT for asyncio
+        else: # Linux, macOS
+            loop.add_signal_handler(signal.SIGINT, stop_event.set)
+            loop.add_signal_handler(signal.SIGTERM, stop_event.set)
+
+        try:
+            await asyncio.gather(
+                gui.run(),
+                stop_event.wait() # Wait for Ctrl+C or app.exit()
+            )
+        except Exception as e:
+            print(f"Error en la aplicación principal: {e}")
+        finally:
+            print("\nCerrando servicios...")
+            await discovery_service.stop()
+            transport.close()
+            # Cierra la aplicación de prompt_toolkit si aún no lo ha hecho
+            if not gui.app.is_exited:
+                gui.app.exit()
+
 
 if __name__ == "__main__":
-    if sys.platform == 'win32':
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    asyncio.run(main())
