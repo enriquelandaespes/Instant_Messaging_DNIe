@@ -7,7 +7,7 @@ from dnie_manager import DNIeManager
 from protocol import SecureIMProtocol
 from discovery import DiscoveryService
 from gui import ChatGUI
-from json_db import JsonEncryptedDB
+from database import JsonEncryptedDB
 
 async def main():
     port = config.UDP_PORT

@@ -37,9 +37,6 @@ class ChatGUI:
             Frame(self.w_input, title=f"Mensaje ({my_nick})")
         ]))
 
-        # Cargar contactos previos de la BD JSON
-        self._load_contacts_from_db()
-
         # Keybindings
         kb = KeyBindings()
         @kb.add("c-c")
@@ -51,15 +48,23 @@ class ChatGUI:
         @kb.add("enter")
         def _(event): self.handle_enter()
 
+        # --- CORRECCIÓN: Crear la aplicación ANTES de llamar a funciones que usen self.app ---
         self.app = Application(layout=self.layout, key_bindings=kb, full_screen=True, mouse_support=True)
+        
+        # Cargar contactos previos de la BD JSON (Ahora es seguro porque self.app existe)
+        self._load_contacts_from_db()
 
     def _load_contacts_from_db(self):
+        # Recuperar contactos guardados en el JSON
         for cn in self.db.data["contacts"]:
             if cn not in self.contacts_state:
+                # Inicialmente asumimos desconectado hasta que el protocolo diga lo contrario
                 self.contacts_state[cn] = {"connected": False, "display_name": cn.split(' ')[0]}
                 self.contact_keys.append(cn)
-        if self.contact_keys:
+        
+        if self.contact_keys and self.current_cn is None:
             self.current_cn = self.contact_keys[0]
+            
         self.refresh_ui()
 
     def _get_chat_title(self):
@@ -74,8 +79,7 @@ class ChatGUI:
         msgs = self.db.get_history(self.current_cn)
         formatted_lines = []
         
-        # Ancho estimado para alinear a la derecha (parche visual)
-        # prompt_toolkit no tiene "align right" nativo simple en FormattedText
+        # Ancho estimado para alinear a la derecha
         PAD_WIDTH = 80 
         
         for m in msgs:
@@ -89,7 +93,10 @@ class ChatGUI:
                 # Ticks: 1 (pending) = ✓, 2 (sent) = ✓✓
                 ticks = "✓" if status == 'pending' else "✓✓"
                 line_content = f"{text} {time} {ticks}"
-                padding = " " * max(0, PAD_WIDTH - len(line_content))
+                
+                # Padding simple para simular alineación derecha
+                padding_len = max(0, PAD_WIDTH - len(line_content))
+                padding = " " * padding_len
                 
                 formatted_lines.append(("", "\n"))
                 formatted_lines.append(("", padding))
@@ -108,29 +115,34 @@ class ChatGUI:
 
     def move_selection(self, delta):
         if not self.contact_keys: return
-        idx = self.contact_keys.index(self.current_cn) if self.current_cn in self.contact_keys else 0
+        
+        # Encontrar índice actual de forma segura
+        idx = 0
+        if self.current_cn in self.contact_keys:
+            idx = self.contact_keys.index(self.current_cn)
+            
         new_idx = (idx + delta) % len(self.contact_keys)
         self.current_cn = self.contact_keys[new_idx]
         self.refresh_ui()
 
     def add_or_update_peer(self, name_or_cn, ip, port, is_cn=False):
-        # Si no es CN (viene de Discovery como Ruben_6666), buscamos si ya existe
+        # Lógica para manejar nombres de Discovery (Ruben_6666) vs Nombres Reales (CN)
         cn = name_or_cn
         display = name_or_cn.split('_')[0]
 
         if not is_cn:
-            # Intentar deducir o usar temporal
-            cn = name_or_cn 
+            # Es un nombre temporal de red
+            pass
         
         if cn not in self.contacts_state:
             self.contacts_state[cn] = {"connected": False, "display_name": display}
             self.contact_keys.append(cn)
             if self.current_cn is None: self.current_cn = cn
 
-        # Guardar IP en BD
+        # Guardar IP actualizada en BD
         self.db.update_contact_info(cn, ip, port)
         
-        # Intentar enviar pendientes si hay IP
+        # Intentar enviar pendientes si ahora tenemos IP
         self.check_pending(cn, ip, port)
         self.refresh_ui()
 
@@ -138,7 +150,7 @@ class ChatGUI:
         # Actualizar estado visual a CONECTADO 🟢
         self.add_or_update_peer(nombre_cn, addr[0], addr[1], is_cn=True)
         self.contacts_state[nombre_cn]["connected"] = True
-        self.contacts_state[nombre_cn]["display_name"] = nombre_cn # Nombre real del cert
+        self.contacts_state[nombre_cn]["display_name"] = nombre_cn # Usar nombre real del cert
         
         timestamp = datetime.now().strftime("%H:%M")
         
@@ -157,6 +169,7 @@ class ChatGUI:
         
         sent_indices = []
         for i, msg in pending:
+            # Enviamos a través del protocolo
             self.protocol.enviar_mensaje(ip, port, msg["text"])
             sent_indices.append(i)
         
@@ -170,28 +183,28 @@ class ChatGUI:
         if not text: return
 
         state = self.contacts_state[self.current_cn]
-        # Recuperar IP de la BD
+        
+        # Recuperar IP de la BD por si acaso no vino por discovery reciente
+        ip = None
+        port = None
         if self.current_cn in self.db.data["contacts"]:
             ip = self.db.data["contacts"][self.current_cn].get("ip")
             port = self.db.data["contacts"][self.current_cn].get("port")
-        else:
-            ip, port = None, None
 
         timestamp = datetime.now().strftime("%H:%M")
 
-        # Lógica:
-        # 1. Si no hay IP -> Pendiente (1 Tick)
-        # 2. Si hay IP pero no conectado -> Mandar Handshake + Guardar Pendiente (1 Tick)
-        # 3. Si conectado -> Enviar + Guardar Enviado (2 Ticks)
-
+        # Lógica de envío y ticks
         if not ip:
+            # 1 Tick (Pendiente, sin IP conocida)
             self.db.add_message(self.current_cn, "Yo", text, "pending", timestamp)
         elif not state["connected"]:
+            # 1 Tick (Pendiente, tenemos IP pero falta Handshake)
             self.protocol.enviar_handshake(ip, port)
             self.db.add_message(self.current_cn, "Yo", text, "pending", timestamp)
         else:
+            # 2 Ticks (Enviado, conectado)
             self.protocol.enviar_mensaje(ip, port, text)
-            self.db.add_message(self.current_cn, "Yo", text, "sent", timestamp) # sent = 2 ticks
+            self.db.add_message(self.current_cn, "Yo", text, "sent", timestamp)
 
         self.refresh_ui()
 
@@ -202,11 +215,11 @@ class ChatGUI:
             s = self.contacts_state[k]
             prefix = "➤ " if k == self.current_cn else "  "
             
-            # Lógica visual del estado
+            # Icono
             if s["connected"]:
                 icon = "🟢" 
             else:
-                # Si tenemos IP en BD es "Disponible pero desconectado", si no "Desconocido"
+                # Verificar si tenemos IP guardada para mostrar rojo vs negro
                 has_ip = False
                 if k in self.db.data["contacts"] and self.db.data["contacts"][k].get("ip"):
                     has_ip = True
@@ -215,6 +228,8 @@ class ChatGUI:
             lines.append(f"{prefix}{icon} {s['display_name']}")
         
         self.w_contacts.text = "\n".join(lines)
+        
+        # Forzar redibujado (esto fallaba antes porque self.app no existía)
         self.app.invalidate()
 
     async def run(self):
