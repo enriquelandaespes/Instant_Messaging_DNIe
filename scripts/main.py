@@ -7,7 +7,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from dnie_manager import DNIeManager
 from discovery import DiscoveryService
 from protocol import SecureIMProtocol
-from scripts.gui import ChatGUI
+from gui import ChatGUI
 from db import DatabaseManager
 
 # --- Configuración inicial ---
