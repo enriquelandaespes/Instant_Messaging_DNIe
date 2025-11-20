@@ -11,25 +11,22 @@ from prompt_toolkit.data_structures import Point
 
 class ChatGUI:
     def __init__(self, protocol, my_nick, db):
-        self.protocol = protocol
+        self.protocol = protocol # Será asignado después en main.py
         self.my_nick = my_nick
         self.db = db
         
-        # contacts_state ahora solo guarda info para la UI
-        # Los datos persistentes (IP, Port) están en db.data["contacts"]
+        # contacts_state para la UI: {CN: {"display_name": "...", "connected": bool}}
         self.contacts_state = {} 
-        self.current_cn = None # CN del contacto seleccionado
         self.contact_keys = [] # Lista ordenada de CNs para la UI
+        self.current_cn = None # CN del contacto seleccionado
 
         # --- Widgets ---
         self.w_contacts = TextArea(focusable=False, width=35)
-        
         self.chat_control = FormattedTextControl(
             text=self._get_chat_content,
             get_cursor_position=self._get_chat_cursor_position,
             focusable=False 
         )
-        
         self.w_chat_window = Window(content=self.chat_control, wrap_lines=True, always_hide_cursor=False)
         self.w_input = TextArea(height=3, prompt="> ", multiline=False)
 
@@ -74,43 +71,41 @@ class ChatGUI:
 
     def _load_initial_contacts(self):
         # Cargar todos los contactos de la DB al iniciar
-        for cn in self.db.data["contacts"]:
-            self._init_contact_state(cn) # Inicializa el estado para la UI
+        for cn, contact_data in self.db.data["contacts"].items():
+            self._init_contact_ui_state(cn) # Inicializa el estado para la UI
         
-        # Ordenar y seleccionar el primero si existe
         self.contact_keys.sort()
         if self.contact_keys and self.current_cn is None:
             self.current_cn = self.contact_keys[0]
         self.refresh_ui()
 
-    def _init_contact_state(self, cn):
-        # Esta función inicializa/reinicia el estado de un contacto en la UI
-        # La IP y el puerto se obtienen de la DB. El estado 'connected' es inicial falso.
-        db_contact = self.db.get_contact_info(cn)
-        self.contacts_state[cn] = {
-            "connected": False, # Estado inicial no conectado
-            "display_name": cn,
-            "ip": db_contact.get("ip"),
-            "port": db_contact.get("port")
-        }
-        if cn not in self.contact_keys:
-            self.contact_keys.append(cn)
-            self.contact_keys.sort() # Mantener ordenado
+    def _init_contact_ui_state(self, cn):
+        # Inicializa o actualiza el estado de la UI para un contacto dado su CN
+        # connected se asume False al inicio
+        if cn not in self.contacts_state:
+            self.contacts_state[cn] = {"display_name": cn, "connected": False}
+            if cn not in self.contact_keys:
+                self.contact_keys.append(cn)
+                self.contact_keys.sort()
+        # Si ya existe, solo resetear el estado de conexión al iniciar
+        self.contacts_state[cn]["connected"] = False
 
     def _get_chat_title(self):
         if not self.current_cn: return "Chat Seguro"
         
-        state = self.contacts_state.get(self.current_cn, {})
+        ui_state = self.contacts_state.get(self.current_cn, {})
+        db_info = self.db.get_contact_info(self.current_cn)
+        
         status_text = ""
         
-        if state.get("connected"):
+        if ui_state.get("connected"):
              status_text = "🟢 CONECTADO"
-        elif state.get("ip"): # Tiene IP conocida pero no conectado (solo descubierto)
+        elif db_info and db_info.get("ip") and db_info.get("port"):
              status_text = "🟡 DISPONIBLE (Pulsa Enter)"
         else:
              status_text = "🔴 OFFLINE"
              
-        return f"Chat con {self.current_cn} [{status_text}]" # Usar current_cn directamente aquí
+        return f"Chat con {ui_state.get('display_name', self.current_cn)} [{status_text}]"
 
     def _get_chat_content(self):
         if not self.current_cn: return [("class:info", "Esperando contactos...")]
@@ -125,7 +120,7 @@ class ChatGUI:
             time = m['time']
             status = m['status']
             
-            if sender == "Yo":
+            if sender == self.my_nick: # Mensajes propios
                 ticks = "✓" if status == 'pending' else "✓✓"
                 line_content = f"{text}   {time} {ticks}"
                 padding = " " * max(0, PAD_WIDTH - len(line_content))
@@ -136,7 +131,7 @@ class ChatGUI:
                 line_content = f"--- {text} ---"
                 formatted_lines.append(("", "\n"))
                 formatted_lines.append(("ansigray", line_content.center(PAD_WIDTH)))
-            else:
+            else: # Mensajes de otros
                 formatted_lines.append(("", "\n"))
                 formatted_lines.append(("ansiyellow", f"[{time}] {sender}: {text}"))
                 
@@ -151,72 +146,65 @@ class ChatGUI:
         self.current_cn = self.contact_keys[new_idx]
         self.refresh_ui()
 
-    def add_or_update_peer(self, discovered_name_or_cn, ip, port, from_zeroconf=True):
+    def add_or_update_peer(self, discovered_name, ip, port):
         """
-        Gestiona la adición/actualización de un peer.
-        'discovered_name_or_cn' puede ser un 'nick_puerto' de Zeroconf o un CN directo.
+        Llamado por DiscoveryService.
+        'discovered_name' es del formato 'nick_puerto' de Zeroconf.
         """
-        cn_to_use = None
+        # Intentamos encontrar el CN si ya lo tenemos por IP/Puerto, si no, usamos 'discovered_name' temporalmente
+        cn_from_db = None
+        for cn_key, data in self.db.data["contacts"].items():
+            if data.get("ip") == ip and data.get("port") == port:
+                cn_from_db = cn_key
+                break
         
-        if from_zeroconf:
-            # Si viene de Zeroconf, el nombre es 'nick_puerto'
-            # Buscamos si ya tenemos un contacto con esa IP/Puerto en la DB
-            for existing_cn, data in self.db.data["contacts"].items():
-                if data.get("ip") == ip and data.get("port") == port:
-                    cn_to_use = existing_cn
-                    break
-            
-            # Si no, asumimos que el 'nick_puerto' es un nuevo contacto temporal
-            # o que el CN no se ha extraído todavía
-            if not cn_to_use:
-                cn_to_use = discovered_name_or_cn # Usamos el nombre de Zeroconf temporalmente
-        else:
-            # Si viene del protocolo (ya tenemos un CN del certificado)
-            cn_to_use = discovered_name_or_cn
-        
-        if not cn_to_use: return # No se pudo determinar el CN
+        # Si no lo encontramos por IP/Puerto, o si es un nuevo descubrimiento,
+        # asumimos que el 'discovered_name' (e.g., "SanzManovel_6666") es el identificador temporal
+        # hasta que se establezca el handshake y conozcamos el CN real del certificado.
+        # En la DB, lo guardaremos como 'discovered_name' si no tenemos un CN real.
+        managed_cn = cn_from_db if cn_from_db else discovered_name
 
-        # Añadir/actualizar en la DB
-        actual_cn = self.db.add_or_update_contact(cn_to_use, ip, port)
+        # 1. Actualizar la base de datos con la información del contacto
+        # Esto creará el contacto si es nuevo o actualizará su IP/Puerto
+        self.db.add_or_update_contact(managed_cn, ip, port)
         
-        # Inicializar/actualizar el estado de la UI
-        if actual_cn not in self.contacts_state:
-            self._init_contact_state(actual_cn)
-        else:
-            self.contacts_state[actual_cn]["ip"] = ip
-            self.contacts_state[actual_cn]["port"] = port
+        # 2. Actualizar el estado de la UI
+        if managed_cn not in self.contacts_state:
+            self._init_contact_ui_state(managed_cn)
         
-        # Reiniciar estado de conexión si es una nueva IP/puerto o de zeroconf
-        if from_zeroconf:
-            self.contacts_state[actual_cn]["connected"] = False
-
+        self.contacts_state[managed_cn]["display_name"] = managed_cn # Display temporal de Zeroconf
+        self.contacts_state[managed_cn]["connected"] = False # Siempre falso en el descubrimiento
+        
         self.refresh_ui()
 
-    def on_protocol_msg(self, addr, text, nombre_cn):
-        # addr es la tupla (IP, Puerto)
-        # nombre_cn es el nombre extraído del certificado del handshake
+    def on_protocol_msg(self, addr, text, real_cn_from_cert):
+        # addr es (IP, Puerto), real_cn_from_cert es el Common Name del DNIe
         
-        # Primero, actualizamos el contacto en la DB con el CN real y la IP/Puerto
-        actual_cn = self.db.add_or_update_contact(nombre_cn, addr[0], addr[1])
+        # 1. Asegurarnos de que el contacto existe en la DB con el CN real
+        # Si ya teníamos un contacto temporal (nick_puerto) para esa IP/Puerto, lo actualizamos al CN real.
+        managed_cn = self.db.add_or_update_contact(real_cn_from_cert, addr[0], addr[1])
         
-        # Luego, actualizamos el estado de la GUI
-        if actual_cn not in self.contacts_state:
-            self._init_contact_state(actual_cn) # Lo añadimos si es nuevo para la GUI
+        # Si el CN real es diferente del temporal que habíamos usado para esa IP/Puerto,
+        # necesitamos "migrar" los mensajes antiguos o al menos actualizar el nombre en la UI.
+        # Por simplicidad, asumimos que 'real_cn_from_cert' es el definitivo.
+        
+        # 2. Actualizar el estado de la UI
+        if managed_cn not in self.contacts_state:
+            self._init_contact_ui_state(managed_cn)
 
-        self.contacts_state[actual_cn]["ip"] = addr[0]
-        self.contacts_state[actual_cn]["port"] = addr[1]
-
+        self.contacts_state[managed_cn]["display_name"] = real_cn_from_cert # Mostrar el nombre real
+        
         timestamp = datetime.now().strftime("%H:%M")
         
         if text == "HANDSHAKE_OK":
-            self.contacts_state[actual_cn]["connected"] = True # Marcar como conectado
-            self.db.add_message(actual_cn, "Sys", "CONEXIÓN SEGURA ESTABLECIDA", "received", timestamp)
-            self.check_pending(actual_cn, addr[0], addr[1])
+            self.contacts_state[managed_cn]["connected"] = True 
+            self.db.add_message(managed_cn, "Sys", "CONEXIÓN SEGURA ESTABLECIDA", "received", timestamp)
+            self.check_pending(managed_cn, addr[0], addr[1])
         elif text == "HANDSHAKE_ERROR":
-            self.contacts_state[actual_cn]["connected"] = False # Marcar como no conectado
-            self.db.add_message(actual_cn, "Sys", "ERROR: No se pudo establecer conexión segura.", "received", timestamp)
+            self.contacts_state[managed_cn]["connected"] = False 
+            self.db.add_message(managed_cn, "Sys", "ERROR: No se pudo establecer conexión segura.", "received", timestamp)
         else:
-            self.db.add_message(actual_cn, nombre_cn, text, "received", timestamp)
+            self.db.add_message(managed_cn, managed_cn, text, "received", timestamp)
         
         self.refresh_ui()
 
@@ -239,15 +227,16 @@ class ChatGUI:
         if not self.current_cn: return
         text = self.w_input.text.strip()
         
-        current_contact_state = self.contacts_state[self.current_cn]
+        db_info = self.db.get_contact_info(self.current_cn)
+        ui_state = self.contacts_state.get(self.current_cn, {})
         
-        ip = current_contact_state.get("ip")
-        port = current_contact_state.get("port")
+        ip = db_info.get("ip") if db_info else None
+        port = db_info.get("port") if db_info else None
         
-        # Si no hay IP/Puerto conocido, no podemos hacer nada (ni handshake ni mensaje)
+        # Si no hay IP/Puerto conocido, no podemos hacer nada
         if not ip or not port:
             if text:
-                self.db.add_message(self.current_cn, "Yo", text, "pending", datetime.now().strftime("%H:%M"))
+                self.db.add_message(self.current_cn, self.my_nick, text, "pending", datetime.now().strftime("%H:%M"))
                 self.db.add_message(self.current_cn, "Sys", "Mensaje en cola. Vecino offline o no descubierto.", "Sys", datetime.now().strftime("%H:%M"))
             self.w_input.text = ""
             self.refresh_ui()
@@ -255,39 +244,44 @@ class ChatGUI:
 
         timestamp = datetime.now().strftime("%H:%M")
 
-        if not current_contact_state["connected"]:
+        if not ui_state.get("connected"):
             # No estamos conectados -> intentar Handshake
             self.protocol.enviar_handshake(ip, port)
             self.db.add_message(self.current_cn, "Sys", "Enviando solicitud de conexión...", "pending", timestamp)
             if text: # Si hay texto, lo ponemos en cola como pendiente
-                self.db.add_message(self.current_cn, "Yo", text, "pending", timestamp)
+                self.db.add_message(self.current_cn, self.my_nick, text, "pending", timestamp)
         else:
             # Ya estamos conectados -> enviar mensaje
             if text:
                 self.protocol.enviar_mensaje(ip, port, text)
-                self.db.add_message(self.current_cn, "Yo", text, "sent", timestamp)
+                self.db.add_message(self.current_cn, self.my_nick, text, "sent", timestamp)
             else:
-                # Si estamos conectados y el input está vacío, simplemente ignorar Enter
+                # Si estamos conectados y el input está vacío, ignorar Enter
                 self.w_input.text = ""
                 self.refresh_ui()
-                return # Salir sin limpiar input de nuevo
+                return 
         
-        self.w_input.text = "" # Limpiar input después de procesar
+        self.w_input.text = "" 
         self.refresh_ui()
 
     def refresh_ui(self):
         lines = []
-        for k in self.contact_keys:
-            s = self.contacts_state[k]
-            prefix = "➤ " if k == self.current_cn else "  "
+        # Contactos cargados desde la DB + los nuevos descubiertos
+        all_contact_cns = sorted(list(self.contacts_state.keys())) 
+
+        for cn_key in all_contact_cns:
+            ui_state = self.contacts_state[cn_key]
+            db_info = self.db.get_contact_info(cn_key) # Obtener info de la DB para IP/Port
+            
+            prefix = "➤ " if cn_key == self.current_cn else "  "
             
             icon = "🔴" # Por defecto offline
-            if s.get("connected"):
+            if ui_state.get("connected"):
                 icon = "🟢" 
-            elif s.get("ip") and s.get("port"): # Tiene IP/Puerto pero no conectado (solo descubierto)
+            elif db_info and db_info.get("ip") and db_info.get("port"): 
                 icon = "🟡" 
 
-            lines.append(f"{prefix}{icon} {s['display_name']}")
+            lines.append(f"{prefix}{icon} {ui_state['display_name']}")
         
         self.w_contacts.text = "\n".join(lines)
         self.app.invalidate()
