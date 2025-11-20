@@ -22,9 +22,7 @@ class ChatGUI:
         # --- Widgets ---
         self.w_contacts = TextArea(focusable=False, width=35)
         
-        # --- CORRECCIÓN ESCRITURA ---
-        # Quitamos focusable=True para que no robe el foco al escribir.
-        # Mantenemos get_cursor_position para el auto-scroll.
+        # Chat no seleccionable para no bloquear el teclado
         self.chat_control = FormattedTextControl(
             text=self._get_chat_content,
             get_cursor_position=self._get_chat_cursor_position,
@@ -34,13 +32,18 @@ class ChatGUI:
         self.w_chat_window = Window(content=self.chat_control, wrap_lines=True, always_hide_cursor=False)
         self.w_input = TextArea(height=3, prompt="> ", multiline=False)
 
-        self.layout = Layout(HSplit([
-            VSplit([
-                Frame(self.w_contacts, title="Vecinos (DNIe)"), 
-                Frame(self.w_chat_window, title=self._get_chat_title)
+        # --- ESTRUCTURA Y FOCO INICIAL ---
+        # CORRECCIÓN: 'focused_element' va aquí en el Layout, no en Application
+        self.layout = Layout(
+            HSplit([
+                VSplit([
+                    Frame(self.w_contacts, title="Vecinos (DNIe)"), 
+                    Frame(self.w_chat_window, title=self._get_chat_title)
+                ]),
+                Frame(self.w_input, title=f"Escribe aquí ({my_nick})")
             ]),
-            Frame(self.w_input, title=f"Escribe aquí ({my_nick})")
-        ]))
+            focused_element=self.w_input  # <--- El cursor empieza aquí
+        )
 
         kb = KeyBindings()
         @kb.add("c-c")
@@ -52,20 +55,18 @@ class ChatGUI:
         @kb.add("enter")
         def _(event): self.handle_enter()
 
-        # --- CORRECCIÓN FINAL: initial_focus ---
-        # Esto asegura que al arrancar, el cursor esté listo para escribir
+        # --- Aplicación ---
         self.app = Application(
             layout=self.layout, 
             key_bindings=kb, 
             full_screen=True, 
-            mouse_support=True,
-            initial_focus=self.w_input 
+            mouse_support=True
         )
         
         self._load_contacts_from_db()
 
     def _get_chat_cursor_position(self):
-        # Truco para Auto-Scroll: Le decimos que el cursor virtual está siempre al final
+        # Auto-scroll forzando el cursor virtual al final
         lines = self._get_chat_content()
         row_count = 0
         for item in lines:
@@ -85,7 +86,6 @@ class ChatGUI:
         if not self.current_cn: return "Chat Seguro"
         state = self.contacts_state[self.current_cn]
         
-        # --- LÓGICA DE ESTADOS CORREGIDA ---
         if state["connected"]:
              status = "🟢 CONECTADO"
         elif state.get("ip"):
@@ -109,6 +109,7 @@ class ChatGUI:
             status = m['status']
             
             if sender == "Yo":
+                # Alineado a la derecha con Cyan
                 ticks = "✓" if status == 'pending' else "✓✓"
                 line_content = f"{text}   {time} {ticks}"
                 padding = " " * max(0, PAD_WIDTH - len(line_content))
@@ -116,10 +117,12 @@ class ChatGUI:
                 formatted_lines.append(("", padding))
                 formatted_lines.append(("ansicyan bold", f"{line_content}"))
             elif sender == "Sys":
+                # Sistema centrado
                 line_content = f"--- {text} ---"
                 formatted_lines.append(("", "\n"))
                 formatted_lines.append(("ansigray", line_content.center(PAD_WIDTH)))
             else:
+                # Otros a la izquierda con Amarillo
                 formatted_lines.append(("", "\n"))
                 formatted_lines.append(("ansiyellow", f"[{time}] {sender}: {text}"))
                 
@@ -141,7 +144,7 @@ class ChatGUI:
         if name_or_cn in self.contacts_state:
             target_cn = name_or_cn
         else:
-            # 2. Búsqueda por coincidencia de inicio (para discovery)
+            # 2. Búsqueda aproximada para Discovery
             prefix = name_or_cn.split('_')[0]
             for k in self.contact_keys:
                 if k.startswith(prefix):
@@ -149,7 +152,7 @@ class ChatGUI:
                     break
             
             if not target_cn and not is_cn and ip is not None:
-                target_cn = name_or_cn # Nuevo contacto temporal
+                target_cn = name_or_cn 
 
         if not target_cn: return
 
@@ -160,27 +163,22 @@ class ChatGUI:
 
         # Actualización de estado
         if ip is None:
-            # Se ha ido
             self.contacts_state[target_cn]["connected"] = False
             self.contacts_state[target_cn]["ip"] = None
             self.db.update_contact_info(target_cn, None, None)
         else:
-            # Ha aparecido
             self.contacts_state[target_cn]["ip"] = ip
             self.db.update_contact_info(target_cn, ip, port)
             
-            # Solo marcamos "Conectado" (Verde) si es un mensaje real de protocolo, 
-            # si viene de Discovery se queda en Amarillo (Disponible)
             if is_cn: 
                 self.contacts_state[target_cn]["connected"] = True
-                self.contacts_state[target_cn]["display_name"] = name_or_cn # Nombre limpio
+                self.contacts_state[target_cn]["display_name"] = name_or_cn
             
             self.check_pending(target_cn, ip, port)
 
         self.refresh_ui()
 
     def on_protocol_msg(self, addr, text, nombre_cn):
-        # Al recibir mensaje, confirmamos conexión verde
         self.add_or_update_peer(nombre_cn, addr[0], addr[1], is_cn=True)
         
         timestamp = datetime.now().strftime("%H:%M")
@@ -222,16 +220,12 @@ class ChatGUI:
         if not port: port = 6666 
         timestamp = datetime.now().strftime("%H:%M")
 
-        # Lógica de envío
         if not ip:
-            # Caso Rojo
             self.db.add_message(self.current_cn, "Yo", text, "pending", timestamp)
         elif not state["connected"]:
-            # Caso Amarillo (Intentamos handshake y guardamos pendiente)
             self.protocol.enviar_handshake(ip, port)
             self.db.add_message(self.current_cn, "Yo", text, "pending", timestamp)
         else:
-            # Caso Verde
             self.protocol.enviar_mensaje(ip, port, text)
             self.db.add_message(self.current_cn, "Yo", text, "sent", timestamp)
 
@@ -243,13 +237,12 @@ class ChatGUI:
             s = self.contacts_state[k]
             prefix = "➤ " if k == self.current_cn else "  "
             
-            # Iconos
             if s["connected"]:
-                icon = "🟢" # Verde
+                icon = "🟢" 
             elif s.get("ip"): 
-                icon = "🟡" # Amarillo (Disponible)
+                icon = "🟡" 
             else:
-                icon = "🔴" # Rojo (No IP)
+                icon = "🔴" 
 
             lines.append(f"{prefix}{icon} {s['display_name']}")
         
