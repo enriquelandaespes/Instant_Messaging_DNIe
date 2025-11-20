@@ -3,7 +3,7 @@ import asyncio
 import sys
 import os
 import signal
-from getpass import getpass # <--- CORREGIDO: Importar la función directamente
+from getpass import getpass 
 import pkcs11.exceptions 
 
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -18,7 +18,6 @@ DEFAULT_PORT = 6666
 
 async def main():
     port = DEFAULT_PORT
-    # Permitir cambiar puerto por argumentos si se desea
     if len(sys.argv) > 1 and sys.argv[1].isdigit():
         port = int(sys.argv[1])
 
@@ -29,8 +28,6 @@ async def main():
     my_nick = "Desconocido"
     
     try:
-        # 1. Pedir PIN de forma oculta
-        # Al usar 'from getpass import getpass', esto ya funciona correctamente
         pin = getpass("Introduce el PIN de tu DNIe: ").strip() 
         
         if not pin:
@@ -40,14 +37,12 @@ async def main():
         print("⌛ Cargando DNIe...")
         dnie_manager = DNIeManager(pin) 
 
-        # 2. Obtener Nick y ID único
         my_nick = dnie_manager.get_user_name()
         db_id = dnie_manager.get_unique_id() 
         
         print(f"✅ Usuario DNIe: {my_nick}")
         print(f"🔑 ID Base de Datos: {db_id[:8]}...")
 
-        # 3. Inicializar Base de Datos Cifrada
         db = JsonEncryptedDB(dnie_manager, db_id)
 
     except pkcs11.exceptions.PinIncorrect:
@@ -60,7 +55,6 @@ async def main():
         print(f"\n❌ Error Crítico al iniciar: {e}")
         return
 
-    # --- Inicio del sistema (si el login fue correcto) ---
     loop = asyncio.get_running_loop()
     
     # Definir callbacks
@@ -71,7 +65,8 @@ async def main():
         gui.add_or_update_peer(name, ip, p)
 
     # Inicializar componentes
-    protocol_instance = SecureIMProtocol(dnie_manager, protocol_cb)
+    # === CAMBIO AQUI: PASAR 'db' y 'protocol_cb' CORRECTAMENTE ===
+    protocol_instance = SecureIMProtocol(dnie_manager, db, protocol_cb) 
     gui = ChatGUI(protocol=protocol_instance, my_nick=my_nick, db=db)
     
     # Discovery

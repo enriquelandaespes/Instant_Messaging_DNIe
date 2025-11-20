@@ -31,7 +31,7 @@ class JsonEncryptedDB:
         key = base64.urlsafe_b64encode(hkdf.derive(signature))
         self.cipher = Fernet(key)
         
-        # 'contacts' ahora almacena {cn: {ip: "...", port: ..., msgs: [...]}}
+        # 'contacts' ahora almacena {cn: {ip: "...", port: ..., is_connected: False, msgs: [...]}}
         self.data = {"contacts": {}} 
         self.load()
 
@@ -47,16 +47,20 @@ class JsonEncryptedDB:
 
             decrypted_json = self.cipher.decrypt(encrypted_content).decode('utf-8')
             self.data = json.loads(decrypted_json)
-            # Asegurarse de que "msgs" existe para todos los contactos cargados
+            
+            # Post-procesamiento para asegurar la consistencia del esquema
             for cn_data in self.data["contacts"].values():
-                if "msgs" not in cn_data:
-                    cn_data["msgs"] = []
+                cn_data.setdefault("msgs", [])
+                cn_data.setdefault("ip", None)
+                cn_data.setdefault("port", None)
+                cn_data.setdefault("is_connected", False) # Resetear estado de conexión al inicio
+                cn_data.setdefault("last_seen", None) # Timestamp de última vez visto
         except Exception as e:
             print(f"⚠️ Error cargando BD (posible clave incorrecta o fichero corrupto): {e}")
 
     def save(self):
         try:
-            json_str = json.dumps(self.data, indent=4) # Indent para legibilidad en depuración
+            json_str = json.dumps(self.data, indent=4) 
             encrypted_content = self.cipher.encrypt(json_str.encode('utf-8'))
             
             with open(self.file_path, 'wb') as f:
@@ -64,28 +68,61 @@ class JsonEncryptedDB:
         except Exception as e:
             print(f"Error guardando BD: {e}")
 
-    # --- Función principal para gestionar contactos ---
-    def add_or_update_contact(self, cn, ip=None, port=None):
+    def add_or_update_contact(self, cn, ip=None, port=None, update_seen=True):
         """
         Añade un contacto o actualiza su IP/Puerto/CN.
         Crea el historial de mensajes si es un contacto nuevo.
         """
         if cn not in self.data["contacts"]:
-            self.data["contacts"][cn] = {"ip": None, "port": None, "msgs": []}
+            self.data["contacts"][cn] = {
+                "ip": None, 
+                "port": None, 
+                "is_connected": False, # Por defecto, no conectado
+                "last_seen": None,
+                "msgs": []
+            }
         
-        if ip: self.data["contacts"][cn]["ip"] = ip
-        if port: self.data["contacts"][cn]["port"] = port
+        contact = self.data["contacts"][cn]
+        if ip: contact["ip"] = ip
+        if port: contact["port"] = port
+        if update_seen: contact["last_seen"] = datetime.now().isoformat() # ISO para fácil serialización
         
         self.save()
-        return cn # Devolvemos el CN del contacto gestionado
+        return cn 
 
     def get_contact_info(self, cn):
+        """Devuelve toda la información de un contacto."""
         return self.data["contacts"].get(cn)
 
-    def add_message(self, cn, sender, text, status, timestamp=None):
-        # Asegurarse de que el contacto existe con un historial de mensajes
+    def get_all_contacts(self):
+        """Devuelve un diccionario de todos los contactos."""
+        return self.data["contacts"]
+    
+    def get_contacts_for_discovery(self):
+        """Devuelve una lista de (cn, ip, port) de contactos con IP/Port conocidos."""
+        peers = []
+        for cn, data in self.data["contacts"].items():
+            if data.get("ip") and data.get("port"):
+                peers.append((cn, data["ip"], data["port"]))
+        return peers
+
+    def set_contact_connected(self, cn, is_connected: bool):
+        """Actualiza el estado de conexión de un contacto."""
+        if cn in self.data["contacts"]:
+            self.data["contacts"][cn]["is_connected"] = is_connected
+            if not is_connected: # Si se desconecta, invalidar IP/Puerto para forzar redescubrimiento
+                self.data["contacts"][cn]["ip"] = None
+                self.data["contacts"][cn]["port"] = None
+            self.save()
+
+    def add_message(self, cn, sender, text, status='pending', timestamp=None):
+        """
+        Añade un mensaje al historial de un contacto.
+        status: 'pending', 'sent', 'received', 'error', 'system'
+        """
         if cn not in self.data["contacts"]:
-             self.add_or_update_contact(cn) # Lo creamos si no existe
+             # Si no existe, lo crea. Esto podría pasar si recibimos un msg de un peer no visto.
+             self.add_or_update_contact(cn) 
 
         if not timestamp:
             timestamp = datetime.now().strftime("%H:%M")
@@ -93,7 +130,7 @@ class JsonEncryptedDB:
         msg = {
             "sender": sender,
             "text": text,
-            "status": status, # 'pending', 'sent', 'received'
+            "status": status, 
             "time": timestamp
         }
         self.data["contacts"][cn]["msgs"].append(msg)
@@ -101,9 +138,10 @@ class JsonEncryptedDB:
 
     def get_history(self, cn):
         contact_data = self.data["contacts"].get(cn)
-        return contact_data["msgs"] if contact_data and "msgs" in contact_data else []
+        return contact_data["msgs"] if contact_data else []
 
     def get_pending_messages(self, cn):
+        """Devuelve una lista de mensajes con estado 'pending' para un contacto."""
         history = self.get_history(cn)
         pending = []
         for i, msg in enumerate(history):
@@ -111,10 +149,11 @@ class JsonEncryptedDB:
                 pending.append((i, msg))
         return pending
 
-    def mark_as_sent(self, cn, msg_indices):
+    def mark_message_status(self, cn, msg_indices: list, new_status: str):
+        """Actualiza el estado de mensajes específicos por su índice."""
         if cn not in self.data["contacts"]: return
         history = self.data["contacts"][cn]["msgs"]
         for i in msg_indices:
             if i < len(history):
-                history[i]["status"] = "sent"
+                history[i]["status"] = new_status
         self.save()
