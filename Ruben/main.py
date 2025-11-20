@@ -7,7 +7,7 @@ from dnie_manager import DNIeManager
 from protocol import SecureIMProtocol
 from discovery import DiscoveryService
 from gui import ChatGUI
-from database import EncryptedDB
+from json_db import JsonEncryptedDB
 
 async def main():
     port = config.UDP_PORT
@@ -17,27 +17,29 @@ async def main():
     print(f"--- DNIe CHAT (Puerto {port}) ---")
     
     try:
-        # El PIN se usa para:
-        # 1. Autenticar el Handshake
-        # 2. Generar la clave para descifrar la Base de Datos local
         pin = getpass("Introduce PIN DNIe: ")
         print("⌛ Accediendo a DNIe...")
         dnie = DNIeManager(pin)
         
+        print("⌛ Generando ID único para la Base de Datos...")
+        # Usamos la firma del serial del DNI para generar el nombre de archivo
+        db_id = dnie.get_unique_id()
+        
         print("⌛ Obteniendo nombre del usuario...")
         nick = dnie.get_user_name()
         print(f"✅ Bienvenido: {nick}")
-
-        # Inicializar Base de Datos Cifrada
-        db = EncryptedDB(dnie, nick)
+        
+        # Inicializar BD JSON Cifrada
+        db = JsonEncryptedDB(dnie, db_id)
 
     except Exception as e:
         print(f"❌ Error Crítico: {e}")
+        import traceback
+        traceback.print_exc()
         return
 
     loop = asyncio.get_running_loop()
     
-    # Callbacks
     def protocol_cb(addr, text, nombre):
         gui.on_protocol_msg(addr, text, nombre)
 
@@ -45,15 +47,13 @@ async def main():
         gui.add_or_update_peer(name, ip, p)
 
     protocol = SecureIMProtocol(dnie, protocol_cb)
-    # Pasamos la BD a la GUI para que gestione el historial
-    gui = ChatGUI(protocol, nick, db) 
+    gui = ChatGUI(protocol, nick, db)
     mdns = DiscoveryService(port, nick, discovery_cb)
 
     transport, _ = await loop.create_datagram_endpoint(
         lambda: protocol, local_addr=('0.0.0.0', port)
     )
     
-    # Iniciar servicios
     await mdns.start()
     try:
         await gui.run()
