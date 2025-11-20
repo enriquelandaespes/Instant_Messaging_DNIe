@@ -171,13 +171,32 @@ class ChatGUI:
         self.refresh_ui()
 
     def on_protocol_msg(self, addr, text, nombre_cn):
-        self.add_or_update_peer(nombre_cn, addr[0], addr[1], is_cn=True)
+        # Cuando recibimos un mensaje del protocolo, addr ya es (IP, Puerto)
+        # Esto es clave para que coincida con la forma en que guardamos las sesiones
+        cn_from_addr = None
+        for cn_key, state_data in self.contacts_state.items():
+            if state_data.get("ip") == addr[0] and self.db.data["contacts"].get(cn_key, {}).get("port") == addr[1]:
+                cn_from_addr = cn_key
+                break
         
+        if not cn_from_addr: # Si no encontramos un contacto por IP/Puerto, creamos uno temporal o usamos nombre_cn
+            cn_from_addr = nombre_cn
+
+        # Actualizamos el estado de conexión del contacto (si lo conocemos)
+        if cn_from_addr in self.contacts_state:
+            self.contacts_state[cn_from_addr]["connected"] = True
+            self.contacts_state[cn_from_addr]["display_name"] = nombre_cn # Asegurarse de tener el nombre correcto
+            self.contacts_state[cn_from_addr]["ip"] = addr[0]
+            self.db.update_contact_info(cn_from_addr, addr[0], addr[1])
+
+
         timestamp = datetime.now().strftime("%H:%M")
         
         if text == "HANDSHAKE_OK":
             self.db.add_message(nombre_cn, "Sys", "CONEXIÓN SEGURA ESTABLECIDA", "received", timestamp)
             self.check_pending(nombre_cn, addr[0], addr[1])
+        elif text == "HANDSHAKE_ERROR":
+            self.db.add_message(nombre_cn, "Sys", "ERROR: No se pudo establecer conexión segura.", "received", timestamp)
         else:
             self.db.add_message(nombre_cn, nombre_cn, text, "received", timestamp)
         
@@ -201,25 +220,21 @@ class ChatGUI:
         
         state = self.contacts_state[self.current_cn]
         
-        # CORRECCIÓN: Permitimos Enter vacío SOLO si queremos conectar (Handshake)
-        # Si ya estamos conectados y no hay texto, no hacemos nada
-        if not text and state["connected"]:
-            return
-        # Si no tenemos IP (está offline) y no hay texto, no hacemos nada
-        if not text and not state.get("ip"):
-            return
+        # Permitimos Enter vacío para iniciar el Handshake si hay IP y no estamos conectados
+        if not text and state.get("ip") and not state["connected"]:
+            pass # Continuar para iniciar handshake
+        elif not text and state["connected"]:
+            return # Ya conectado y no hay texto, no hacer nada
+        elif not text and not state.get("ip"):
+            return # Offline y no hay texto, no hacer nada
 
         # Limpiamos input solo si vamos a procesar algo
         self.w_input.text = ""
 
         ip = state.get("ip")
-        port = None
-        
-        if not ip and self.current_cn in self.db.data["contacts"]:
-             ip = self.db.data["contacts"][self.current_cn].get("ip")
-             port = self.db.data["contacts"][self.current_cn].get("port")
-        
-        if not port: port = 6666 
+        port = self.db.data["contacts"].get(self.current_cn, {}).get("port") 
+        if not port: port = 6666 # Fallback si no está en DB
+
         timestamp = datetime.now().strftime("%H:%M")
 
         # Lógica de envío
@@ -227,14 +242,14 @@ class ChatGUI:
             # No hay IP conocida
             if text:
                 self.db.add_message(self.current_cn, "Yo", text, "pending", timestamp)
+                self.db.add_message(self.current_cn, "Sys", "Mensaje en cola. Esperando conexión...", "Sys", timestamp)
         elif not state["connected"]:
             # HAY IP PERO NO CONEXIÓN -> HANDSHAKE
             self.protocol.enviar_handshake(ip, port)
             if text:
                 self.db.add_message(self.current_cn, "Yo", text, "pending", timestamp)
-            else:
-                # Feedback visual de que se ha intentado conectar
-                self.db.add_message(self.current_cn, "Sys", "Enviando solicitud de conexión...", "pending", timestamp)
+            # Siempre mostramos el mensaje de "Enviando..." para feedback
+            self.db.add_message(self.current_cn, "Sys", "Enviando solicitud de conexión...", "pending", timestamp)
         else:
             # CONECTADO -> ENVÍO NORMAL
             if text:
