@@ -2,12 +2,13 @@
 import asyncio
 import sys
 import config
+import pkcs11 # Necesario para capturar el error de PIN
 from getpass import getpass
 from dnie_manager import DNIeManager
 from protocol import SecureIMProtocol
 from discovery import DiscoveryService
 from gui import ChatGUI
-from database import JsonEncryptedDB
+from json_db import JsonEncryptedDB
 
 async def main():
     port = config.UDP_PORT
@@ -22,7 +23,6 @@ async def main():
         dnie = DNIeManager(pin)
         
         print("⌛ Generando ID único para la Base de Datos...")
-        # Usamos la firma del serial del DNI para generar el nombre de archivo
         db_id = dnie.get_unique_id()
         
         print("⌛ Obteniendo nombre del usuario...")
@@ -32,10 +32,15 @@ async def main():
         # Inicializar BD JSON Cifrada
         db = JsonEncryptedDB(dnie, db_id)
 
+    except pkcs11.exceptions.PinIncorrect:
+        print("\n❌ Error: El PIN introducido es incorrecto.")
+        return
+    except pkcs11.exceptions.CardNotPresent:
+        print("\n❌ Error: No se detecta el DNIe. Insértalo correctamente.")
+        return
     except Exception as e:
-        print(f"❌ Error Crítico: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"\n❌ Error Crítico: {e}")
+        # import traceback; traceback.print_exc() # Descomentar para depurar
         return
 
     loop = asyncio.get_running_loop()
