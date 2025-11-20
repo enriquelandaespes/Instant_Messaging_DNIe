@@ -29,6 +29,32 @@ class ChatGUI:
         self.w_input = TextArea(height=3, prompt="> ", multiline=False)
 
         # Layout
+        self.layout = Layout(HSplit([
+            VSplit([
+                Frame(self.w_contacts, title="Contactos (DNIe)"), 
+                Frame(self.w_chat_window, title=self._get_chat_title)
+            ]),
+            Frame(self.w_input, title=f"Mensaje ({my_nick})")
+        ]))
+
+        # Keybindings
+        kb = KeyBindings()
+        @kb.add("c-c")
+        def _(event): event.app.exit()
+        @kb.add("up")
+        def _(event): self.move_selection(-1)
+        @kb.add("down")
+        def _(event): self.move_selection(1)
+        @kb.add("enter")
+        def _(event): self.handle_enter()
+
+        # --- CORRECCIÓN: Crear la aplicación ANTES de llamar a funciones que usen self.app ---
+        self.app = Application(layout=self.layout, key_bindings=kb, full_screen=True, mouse_support=True)
+        
+        # Cargar contactos previos de la BD JSON (Ahora es seguro porque self.app existe)
+        self._load_contacts_from_db()
+
+    def _load_contacts_from_db(self):
         # Recuperar contactos guardados en el JSON
         for cn in self.db.data["contacts"]:
             if cn not in self.contacts_state:
