@@ -11,17 +11,17 @@ from cryptography.fernet import Fernet, InvalidToken
 class SecureIMProtocol(asyncio.DatagramProtocol):
     def __init__(self, dnie_manager, db, message_callback):
         self.dnie = dnie_manager
-        self.db = db # Nueva dependencia de la base de datos
-        self.message_callback = message_callback # Callback a la GUI para mensajes
+        self.db = db 
+        self.message_callback = message_callback 
         self.transport = None
 
-        # Claves de sesión establecidas con cada peer {CN: FernetCipher}
-        self.session_keys = {} 
-        # Claves públicas efímeras recibidas {CN: X25519PublicKey}
-        self.peer_ephemeral_public_keys = {}
+        self.session_keys = {} # {CN: FernetCipher}
+        self.peer_ephemeral_public_keys = {} # {CN: X25519PublicKey}
 
-        # Estado de los handshakes {CN: "PENDING", "COMPLETED", "FAILED"}
-        self.handshake_state = {} 
+        # Nuevo: Estado del handshake por CN {CN: "NONE", "INITIATED", "RESPONSED", "COMPLETED", "FAILED"}
+        self.handshake_status = {} 
+        # Almacena la clave efímera privada generada para el handshake que iniciamos nosotros
+        self.my_ephemeral_private_keys = {} # {CN_destino: X25519PrivateKey}
 
     def connection_made(self, transport):
         self.transport = transport
@@ -32,14 +32,21 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         try:
             message = json.loads(data.decode())
             msg_type = message.get("type")
-            sender_cn = message.get("sender_cn", f"{ip}:{port}") # CN o IP/Port temporal
+            sender_cn_from_msg = message.get("sender_cn", f"{ip}:{port}") 
+
+            # Intentar identificar el CN real si ya se ha conocido antes
+            # Esto es clave para manejar el estado correctamente
+            real_cn = sender_cn_from_msg
+            contact_info = self.db.get_contact_info(sender_cn_from_msg)
+            if contact_info and contact_info.get("ip") == ip and contact_info.get("port") == port:
+                real_cn = sender_cn_from_msg # Ya tenemos el CN en la DB
 
             if msg_type == "HANDSHAKE_INIT":
-                self._handle_handshake_init(message, addr)
+                asyncio.create_task(self._handle_handshake_init(message, addr))
             elif msg_type == "HANDSHAKE_RESPONSE":
-                self._handle_handshake_response(message, addr)
+                asyncio.create_task(self._handle_handshake_response(message, addr))
             elif msg_type == "ENCRYPTED_MESSAGE":
-                self._handle_encrypted_message(message, addr, sender_cn)
+                asyncio.create_task(self._handle_encrypted_message(message, addr, real_cn))
             else:
                 print(f"Mensaje desconocido de {addr}: {message}")
 
@@ -50,17 +57,27 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
 
     async def _handle_handshake_init(self, message, addr):
         ip, port = addr
-        peer_nick = message["sender_nick"] # Nick de Zeroconf
+        peer_nick_from_zeroconf = message["sender_nick"] 
         peer_ephemeral_public_bytes = base64.b64decode(message["public_key"])
         peer_dnie_cert_der = base64.b64decode(message["dnie_cert"])
         peer_dnie_signature = base64.b64decode(message["dnie_signature"])
 
-        try:
-            # 1. Verificar certificado DNIe del peer
-            peer_cert = x509.load_der_x509_certificate(peer_dnie_cert_der, default_backend())
-            peer_cn_from_cert = self._get_cn_from_cert(peer_cert)
+        peer_cn_from_cert = self._get_cn_from_cert(x509.load_der_x509_certificate(peer_dnie_cert_der, default_backend()))
+        
+        # Primero, asegurar que el contacto existe en la DB con el CN real
+        self.db.add_or_update_contact(peer_cn_from_cert, ip=ip, port=port, update_seen=True)
+        
+        if self.db.get_contact_info(peer_cn_from_cert).get("is_connected"):
+            print(f"Ya conectado a {peer_cn_from_cert}. Ignorando HANDSHAKE_INIT redundante.")
+            # Podríamos enviar una respuesta de handshake_ok de nuevo si queremos refrescar
+            return
 
-            # 2. Verificar firma DNIe del peer sobre su clave efímera
+        print(f"Recibido HANDSHAKE_INIT de {peer_cn_from_cert} ({addr})")
+        self.handshake_status[peer_cn_from_cert] = "RESPONSED" # Ahora estamos respondiendo
+
+        try:
+            # 1. Verificar certificado DNIe del peer y firma
+            peer_cert = x509.load_der_x509_certificate(peer_dnie_cert_der, default_backend())
             peer_ephemeral_public_key = x25519.X25519PublicKey.from_public_bytes(peer_ephemeral_public_bytes)
             peer_cert.public_key().verify(
                 peer_dnie_signature,
@@ -68,8 +85,12 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 hashes.SHA256()
             )
             
-            # 3. Derivar clave de sesión
-            shared_key = self.dnie.private_key.exchange(peer_ephemeral_public_key)
+            # 2. Derivar clave de sesión
+            # Si nosotros no iniciamos, generamos nuestra propia clave efímera para este handshake
+            my_ephemeral_private_key = x25519.X25519PrivateKey.generate()
+            self.my_ephemeral_private_keys[peer_cn_from_cert] = my_ephemeral_private_key
+            
+            shared_key = my_ephemeral_private_key.exchange(peer_ephemeral_public_key)
             session_key = HKDF(
                 algorithm=hashes.SHA256(),
                 length=32,
@@ -79,47 +100,59 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             ).derive(shared_key)
             
             self.session_keys[peer_cn_from_cert] = Fernet(base64.urlsafe_b64encode(session_key))
-            self.peer_ephemeral_public_keys[peer_cn_from_cert] = peer_ephemeral_public_key
+            self.peer_ephemeral_public_keys[peer_cn_from_cert] = peer_ephemeral_public_key # Guardamos la del peer
 
-            # 4. Enviar respuesta de Handshake
+            # 3. Enviar respuesta de Handshake
             my_dnie_cert, my_dnie_signature = self.dnie.obtener_credenciales()
             response_message = {
                 "type": "HANDSHAKE_RESPONSE",
                 "sender_cn": self.dnie.get_user_name(),
-                "public_key": base64.b64encode(self.dnie.public_bytes).decode(),
+                "public_key": base64.b64encode(my_ephemeral_private_key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)).decode(),
                 "dnie_cert": base64.b64encode(my_dnie_cert).decode(),
                 "dnie_signature": base64.b64encode(my_dnie_signature).decode()
             }
             self.transport.sendto(json.dumps(response_message).encode(), addr)
 
-            # 5. Marcar como conectado y notificar a la GUI
+            # 4. Notificar a la GUI y actualizar estado
             self.db.set_contact_connected(peer_cn_from_cert, True)
             self.message_callback(addr, "HANDSHAKE_OK", peer_cn_from_cert)
-            self.handshake_state[peer_cn_from_cert] = "COMPLETED"
+            self.handshake_status[peer_cn_from_cert] = "COMPLETED"
 
         except Exception as e:
             print(f"Error en HANDSHAKE_INIT de {addr}: {e}")
             self.db.set_contact_connected(peer_cn_from_cert, False)
             self.message_callback(addr, "HANDSHAKE_ERROR", peer_cn_from_cert)
-            self.handshake_state[peer_cn_from_cert] = "FAILED"
+            self.handshake_status[peer_cn_from_cert] = "FAILED"
 
     async def _handle_handshake_response(self, message, addr):
         ip, port = addr
-        peer_cn = message["sender_cn"] # CN del respondedor
+        peer_cn_from_msg = message["sender_cn"] 
         peer_ephemeral_public_bytes = base64.b64decode(message["public_key"])
         peer_dnie_cert_der = base64.b64decode(message["dnie_cert"])
         peer_dnie_signature = base64.b64decode(message["dnie_signature"])
+        
+        # Validar el CN del certificado
+        peer_cert = x509.load_der_x509_certificate(peer_dnie_cert_der, default_backend())
+        peer_cn_from_cert = self._get_cn_from_cert(peer_cert)
+
+        if peer_cn_from_msg != peer_cn_from_cert:
+            print(f"ERROR: CN del mensaje '{peer_cn_from_msg}' no coincide con el CN del certificado '{peer_cn_from_cert}' de {addr}")
+            self.db.set_contact_connected(peer_cn_from_cert, False) # Usar el CN del cert para el fallo
+            self.message_callback(addr, "HANDSHAKE_ERROR", peer_cn_from_cert)
+            self.handshake_status[peer_cn_from_cert] = "FAILED"
+            return
+        
+        peer_cn = peer_cn_from_cert # Usar el CN verificado
+
+        # Asegurar que teníamos un handshake iniciado con este peer
+        if self.handshake_status.get(peer_cn) != "INITIATED":
+            print(f"Recibido HANDSHAKE_RESPONSE inesperado o no solicitado de {peer_cn} ({addr}). Estado: {self.handshake_status.get(peer_cn)}")
+            return # Ignorar si no estábamos esperando una respuesta
+        
+        print(f"Recibido HANDSHAKE_RESPONSE de {peer_cn} ({addr})")
 
         try:
-            # 1. Verificar certificado DNIe del peer
-            peer_cert = x509.load_der_x509_certificate(peer_dnie_cert_der, default_backend())
-            peer_cn_from_cert = self._get_cn_from_cert(peer_cert)
-
-            # 2. Verificar que el CN del mensaje coincide con el del certificado
-            if peer_cn != peer_cn_from_cert:
-                raise ValueError("CN del mensaje no coincide con el CN del certificado.")
-
-            # 3. Verificar firma DNIe del peer sobre su clave efímera
+            # 1. Verificar firma DNIe del peer sobre su clave efímera
             peer_ephemeral_public_key = x25519.X25519PublicKey.from_public_bytes(peer_ephemeral_public_bytes)
             peer_cert.public_key().verify(
                 peer_dnie_signature,
@@ -127,8 +160,12 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 hashes.SHA256()
             )
 
-            # 4. Derivar clave de sesión (usamos la misma lógica que en INIT)
-            shared_key = self.dnie.private_key.exchange(peer_ephemeral_public_key)
+            # 2. Derivar clave de sesión usando nuestra clave efímera privada generada para ESTE handshake
+            my_ephemeral_private_key = self.my_ephemeral_private_keys.get(peer_cn)
+            if not my_ephemeral_private_key:
+                raise RuntimeError(f"No se encontró clave efímera privada para el handshake con {peer_cn}.")
+
+            shared_key = my_ephemeral_private_key.exchange(peer_ephemeral_public_key)
             session_key = HKDF(
                 algorithm=hashes.SHA256(),
                 length=32,
@@ -137,87 +174,117 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 backend=default_backend()
             ).derive(shared_key)
             
-            self.session_keys[peer_cn_from_cert] = Fernet(base64.urlsafe_b64encode(session_key))
-            self.peer_ephemeral_public_keys[peer_cn_from_cert] = peer_ephemeral_public_key
+            self.session_keys[peer_cn] = Fernet(base64.urlsafe_b64encode(session_key))
+            self.peer_ephemeral_public_keys[peer_cn] = peer_ephemeral_public_key
 
-            # 5. Marcar como conectado y notificar a la GUI
-            self.db.set_contact_connected(peer_cn_from_cert, True)
-            self.message_callback(addr, "HANDSHAKE_OK", peer_cn_from_cert)
-            self.handshake_state[peer_cn_from_cert] = "COMPLETED"
+            # 3. Marcar como conectado y notificar a la GUI
+            self.db.set_contact_connected(peer_cn, True)
+            self.message_callback(addr, "HANDSHAKE_OK", peer_cn)
+            self.handshake_status[peer_cn] = "COMPLETED"
+            # Limpiar clave efímera privada una vez establecida la sesión
+            del self.my_ephemeral_private_keys[peer_cn] 
 
         except Exception as e:
             print(f"Error en HANDSHAKE_RESPONSE de {addr}: {e}")
-            self.db.set_contact_connected(peer_cn_from_cert, False)
-            self.message_callback(addr, "HANDSHAKE_ERROR", peer_cn_from_cert)
-            self.handshake_state[peer_cn_from_cert] = "FAILED"
-            
+            self.db.set_contact_connected(peer_cn, False)
+            self.message_callback(addr, "HANDSHAKE_ERROR", peer_cn)
+            self.handshake_status[peer_cn] = "FAILED"
+            # Limpiar clave efímera privada en caso de fallo
+            if peer_cn in self.my_ephemeral_private_keys:
+                del self.my_ephemeral_private_keys[peer_cn]
+
+
     async def _handle_encrypted_message(self, message, addr, sender_cn):
         encrypted_text = base64.b64decode(message["data"])
         
-        try:
-            if sender_cn not in self.session_keys:
-                print(f"No hay clave de sesión para {sender_cn}. Handshake pendiente?")
-                # Intentar iniciar handshake si no hay clave de sesión
-                contact_info = self.db.get_contact_info(sender_cn)
-                if contact_info and not contact_info.get("is_connected"):
-                    # Solo enviamos handshake si no estamos ya "conectados"
-                    self.enviar_handshake(addr[0], addr[1])
-                return
+        if sender_cn not in self.session_keys:
+            print(f"No hay clave de sesión para {sender_cn}. Handshake pendiente o no completado.")
+            # Si recibimos un mensaje cifrado sin sesión, intentamos un handshake de vuelta.
+            # Esto puede pasar si el otro inició y nosotros no estábamos conectados aún.
+            self.enviar_handshake(addr[0], addr[1])
+            self.message_callback(addr, "Sys: Esperando conexión para descifrar...", sender_cn)
+            return
 
+        try:
             decrypted_text = self.session_keys[sender_cn].decrypt(encrypted_text).decode()
             self.message_callback(addr, decrypted_text, sender_cn)
+            # Si el mensaje se descifró bien, confirmamos que la conexión está activa
+            self.db.set_contact_connected(sender_cn, True)
 
         except InvalidToken:
             print(f"Mensaje cifrado no válido de {addr} (clave incorrecta o mensaje manipulado).")
-            # Podríamos desconectar o pedir un re-handshake
-            self.db.set_contact_connected(sender_cn, False)
+            self.db.set_contact_connected(sender_cn, False) # Forzar desconexión
             self.message_callback(addr, "ERROR_CIFRADO", sender_cn)
+            self.handshake_status[sender_cn] = "FAILED" # Forzar re-handshake
         except Exception as e:
             print(f"Error al descifrar mensaje de {addr}: {e}")
             self.db.set_contact_connected(sender_cn, False)
             self.message_callback(addr, "ERROR_CIFRADO", sender_cn)
+            self.handshake_status[sender_cn] = "FAILED"
 
     def enviar_handshake(self, peer_ip, peer_port):
-        peer_cn = None # Necesitamos una forma de identificar al peer por IP/Port si no tenemos CN
-        
-        # Buscar el CN en la DB por IP/Puerto para ver si ya tenemos un estado
+        peer_cn = None 
         for cn, info in self.db.get_all_contacts().items():
             if info.get("ip") == peer_ip and info.get("port") == peer_port:
                 peer_cn = cn
                 break
+        
+        if not peer_cn:
+            # Si no tenemos CN para esta IP/Puerto, no podemos gestionar el estado del handshake
+            print(f"No se puede iniciar handshake: CN desconocido para {peer_ip}:{peer_port}")
+            return
 
-        if peer_cn and self.db.get_contact_info(peer_cn).get("is_connected"):
+        # Solo si NO está ya conectado Y NO hay un handshake pendiente
+        if self.db.get_contact_info(peer_cn).get("is_connected"):
             print(f"Ya conectado a {peer_cn}. No se inicia handshake.")
             return
 
-        print(f"Iniciando handshake con {peer_ip}:{peer_port}...")
+        if self.handshake_status.get(peer_cn) in ["INITIATED", "RESPONSED"]:
+            print(f"Handshake con {peer_cn} ya en progreso. No se inicia uno nuevo.")
+            return
+            
+        print(f"Iniciando handshake con {peer_cn} ({peer_ip}:{peer_port})...")
+        self.handshake_status[peer_cn] = "INITIATED" # Marcar como iniciado
+
         try:
+            # Generar una nueva clave efímera privada para CADA handshake que INICIAMOS
+            my_ephemeral_private_key = x25519.X25519PrivateKey.generate()
+            self.my_ephemeral_private_keys[peer_cn] = my_ephemeral_private_key
+            
             my_dnie_cert, my_dnie_signature = self.dnie.obtener_credenciales()
             message = {
                 "type": "HANDSHAKE_INIT",
-                "sender_nick": self.dnie.get_user_name(), # Usamos el nick de Zeroconf/Display
-                "public_key": base64.b64encode(self.dnie.public_bytes).decode(),
+                "sender_nick": self.dnie.get_user_name(), 
+                "public_key": base64.b64encode(my_ephemeral_private_key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)).decode(),
                 "dnie_cert": base64.b64encode(my_dnie_cert).decode(),
                 "dnie_signature": base64.b64encode(my_dnie_signature).decode()
             }
             self.transport.sendto(json.dumps(message).encode(), (peer_ip, peer_port))
             
-            if peer_cn:
-                self.handshake_state[peer_cn] = "PENDING"
+            # Notificar a la GUI que el handshake ha iniciado para que lo muestre
+            self.message_callback((peer_ip, peer_port), "HANDSHAKE_START", peer_cn)
+
         except Exception as e:
             print(f"Error al enviar handshake a {peer_ip}:{peer_port}: {e}")
+            self.handshake_status[peer_cn] = "FAILED"
+            self.message_callback((peer_ip, peer_port), "HANDSHAKE_ERROR", peer_cn)
+            if peer_cn in self.my_ephemeral_private_keys:
+                del self.my_ephemeral_private_keys[peer_cn]
 
     def enviar_mensaje(self, peer_ip, peer_port, text_message):
         peer_cn = None 
-        # Buscar el CN en la DB por IP/Puerto
         for cn, info in self.db.get_all_contacts().items():
             if info.get("ip") == peer_ip and info.get("port") == peer_port:
                 peer_cn = cn
                 break
 
-        if not peer_cn or peer_cn not in self.session_keys:
-            print(f"No se puede enviar mensaje a {peer_ip}:{peer_port}. Sin clave de sesión.")
-            # Si no hay clave de sesión, intentar un handshake
+        if not peer_cn:
+            print(f"No se puede enviar mensaje: CN desconocido para {peer_ip}:{peer_port}")
+            return
+
+        if not self.db.get_contact_info(peer_cn).get("is_connected") or peer_cn not in self.session_keys:
+            print(f"No se puede enviar mensaje a {peer_cn}. Sin conexión segura o clave de sesión.")
+            # Si se intenta enviar sin conexión activa, forzar un handshake
             self.enviar_handshake(peer_ip, peer_port)
             return
 
@@ -225,7 +292,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             encrypted_data = self.session_keys[peer_cn].encrypt(text_message.encode())
             message = {
                 "type": "ENCRYPTED_MESSAGE",
-                "sender_cn": self.dnie.get_user_name(), # Nuestro CN para que el receptor sepa quién somos
+                "sender_cn": self.dnie.get_user_name(), 
                 "data": base64.b64encode(encrypted_data).decode()
             }
             self.transport.sendto(json.dumps(message).encode(), (peer_ip, peer_port))
