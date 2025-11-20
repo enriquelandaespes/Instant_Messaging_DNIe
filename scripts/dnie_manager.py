@@ -1,6 +1,7 @@
 # dnie_manager.py
 import sys
 import hashlib
+import pkcs11.exceptions as pkcs11_exc # Importar excepciones para usar la correcta
 from pkcs11 import lib as pkcs11_lib, ObjectClass, Attribute, Mechanism
 from cryptography.hazmat.primitives.asymmetric import x25519
 from cryptography.hazmat.primitives import serialization
@@ -13,7 +14,6 @@ class DNIeManager:
         self.pin = pin
         self.lib_path = config.PKCS11_LIB_PATH
         
-        # Generar claves efímeras para el protocolo (X25519)
         self.private_key = x25519.X25519PrivateKey.generate()
         self.public_key = self.private_key.public_key()
         self.public_bytes = self.public_key.public_bytes(
@@ -21,19 +21,27 @@ class DNIeManager:
             format=serialization.PublicFormat.Raw
         )
         
-        # Extraer credenciales inmediatamente usando el PIN proporcionado
+        self.cert_der = None
+        self.firma_cached = None
+        
+        # Intentamos extraer credenciales aquí.
+        # Las excepciones (PinIncorrect, TokenNotPresent) serán manejadas en main.py
         self.cert_der, self.firma_cached = self._extraer_credenciales()
+
 
     def _get_token(self):
         pkcs11 = pkcs11_lib(self.lib_path)
         slots = pkcs11.get_slots(token_present=True)
         if not slots:
-            raise RuntimeError("No se detecta tarjeta DNIe.")
+            # === CAMBIO AQUI: Lanzamos TokenNotPresent para que main.py lo capture ===
+            raise pkcs11_exc.TokenNotPresent("No se detecta tarjeta DNIe.")
         return slots[config.SLOT_INDEX].get_token()
 
     def _extraer_credenciales(self):
-        token = self._get_token()
-        with token.open(user_pin=self.pin, rw=True) as session:
+        # Esta función podría lanzar PinIncorrect o TokenNotPresent
+        # si la tarjeta no está o el PIN es incorrecto.
+        token = self._get_token() # Esto podría lanzar TokenNotPresent
+        with token.open(user_pin=self.pin, rw=True) as session: # Esto podría lanzar PinIncorrect
             certs = list(session.get_objects({Attribute.CLASS: ObjectClass.CERTIFICATE}))
             if not certs: raise RuntimeError("No certificados.")
             cert_der = certs[0][Attribute.VALUE] 
@@ -59,25 +67,39 @@ class DNIeManager:
         Extrae el número de serie del certificado y lo FIRMA con el DNIe.
         Luego hace un hash de esa firma.
         """
+        # Necesitamos que cert_der ya esté cargado. Si no, significa que _extraer_credenciales falló
+        if not self.cert_der:
+            raise RuntimeError("Certificado DNIe no cargado para obtener ID único.")
+
         cert = x509.load_der_x509_certificate(self.cert_der, default_backend())
         serial_number = str(cert.serial_number).encode('utf-8')
-        # Firmamos el número de serie para garantizar que solo este DNIe produce este ID
         signature = self.sign_data(serial_number)
         return hashlib.sha256(signature).hexdigest()[:16]
 
     def obtener_credenciales(self):
+        if not self.cert_der or not self.firma_cached:
+            raise RuntimeError("Credenciales DNIe no cargadas.")
         return self.cert_der, self.firma_cached
 
     def get_user_name(self):
         """Extrae y LIMPIA el Common Name (CN) del certificado."""
+        if not self.cert_der:
+            return "Usuario_DNIe" # Fallback si el certificado no se cargó
         try:
             cert = x509.load_der_x509_certificate(self.cert_der, default_backend())
             cn_attributes = cert.subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)
             if cn_attributes:
                 raw_name = cn_attributes[0].value
-                # Limpieza de nombre
                 clean_name = raw_name.replace("(AUTENTICACIÓN)", "").replace("(FIRMA)", "").strip()
                 return clean_name
         except Exception:
             pass
         return "Usuario_DNIe"
+
+    # La gestión de sesión ahora está principalmente dentro de 'with token.open()'
+    # Si tuvieras una sesión global explícita, necesitarías un close_session.
+    # Pero con el patrón 'with', se cierra automáticamente.
+    def close_session(self):
+        # Este método ya no es tan crítico con el uso de 'with token.open()'.
+        # Se puede dejar como no-op o eliminar si no gestionas una sesión global.
+        pass
