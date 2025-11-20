@@ -1,84 +1,85 @@
 # main.py
 import asyncio
-import argparse # Lo mantenemos por si acaso, pero no lo usaremos directamente
-import os
-import signal
-from prompt_toolkit.patch_stdout import patch_stdout
+import sys
+import config
+import pkcs11 
+from getpass import getpass
 from dnie_manager import DNIeManager
-from discovery import DiscoveryService
 from protocol import SecureIMProtocol
-from gui import ChatGUI # Cambiado: from scripts.gui import ChatGUI -> from gui import ChatGUI
-from database import DatabaseManager # Cambiado: from db import DatabaseManager -> from database import DatabaseManager
-
-# --- Configuración fija ---
-DEFAULT_PORT = 6666 # El puerto siempre es 6666
+from discovery import DiscoveryService
+from gui import ChatGUI
+from database import JsonEncryptedDB
 
 async def main():
-    print("Iniciando DNIe Secure IM...")
-
-    # --- Inicializar DNIe Manager ---
-    dnie_manager = DNIeManager()
-    if not dnie_manager.private_key:
-        print("ERROR: No se pudo cargar el DNIe o acceder a la clave privada.")
-        return
+    port = config.UDP_PORT
+    if len(sys.argv) > 1 and sys.argv[1].isdigit():
+        port = int(sys.argv[1])
     
-    # --- Obtener Nick del DNIe ---
-    # Asumiendo que dnie_manager tiene un método para obtener el CN (Common Name)
-    # o que ya lo extrae al inicializar
-    # Adaptar según cómo tu DNIeManager extrae el nombre
-    my_nick = dnie_manager.get_cn() # Suponiendo que tienes este método en dnie_manager
-    if not my_nick:
-        print("ERROR: No se pudo obtener el nombre de usuario (CN) del DNIe.")
+    print(f"--- DNIe CHAT (Puerto {port}) ---")
+    
+    try:
+        # 1. Pedir PIN de forma oculta
+        pin = getpass("Introduce PIN DNIe: ")
+        print("⌛ Accediendo a DNIe...")
+        
+        # 2. Inicializar Manager con PIN
+        dnie = DNIeManager(pin)
+        
+        # 3. Generar ID único firmado por el DNIe (para nombre de archivo BD)
+        print("⌛ Generando ID único seguro para la Base de Datos...")
+        db_id = dnie.get_unique_id()
+        
+        # 4. Obtener Nick
+        print("⌛ Obteniendo nombre del usuario...")
+        nick = dnie.get_user_name()
+        print(f"✅ Bienvenido: {nick}")
+        
+        # 5. Inicializar BD Cifrada (Deriva clave usando firma DNIe)
+        db = JsonEncryptedDB(dnie, db_id)
+
+    except pkcs11.exceptions.PinIncorrect:
+        print("\n❌ Error: El PIN introducido es incorrecto.")
+        return
+    except pkcs11.exceptions.CardNotPresent:
+        print("\n❌ Error: No se detecta el DNIe. Insértalo correctamente.")
+        return
+    except Exception as e:
+        print(f"\n❌ Error Crítico: {e}")
+        # import traceback; traceback.print_exc() # Descomentar para ver detalles
         return
 
-    print(f"Usuario DNIe: {my_nick}, Puerto: {DEFAULT_PORT}")
-
-    # --- Inicializar Database Manager ---
-    db = DatabaseManager(f"db_{my_nick}.json")
-
-    # --- Inicializar GUI ---
-    gui = ChatGUI(protocol=None, my_nick=my_nick, db=db)
-    
-    # --- Inicializar Protocolo ---
     loop = asyncio.get_running_loop()
-    transport, protocol_instance = await loop.create_datagram_endpoint(
-        lambda: SecureIMProtocol(dnie_manager, gui.on_protocol_msg),
-        local_addr=('0.0.0.0', DEFAULT_PORT)
-    )
-    gui.protocol = protocol_instance # Asignar la instancia del protocolo a la GUI
-
-    # --- Inicializar Discovery ---
-    def on_peer_found(name, ip, port):
-        gui.add_or_update_peer(name, ip, port, from_zeroconf=True) 
     
-    discovery_service = DiscoveryService(DEFAULT_PORT, my_nick, on_peer_found)
-    await discovery_service.start()
+    # Callbacks para la GUI
+    def protocol_cb(addr, text, nombre):
+        gui.on_protocol_msg(addr, text, nombre)
 
-    # --- Arrancar GUI y manejar interrupciones ---
-    with patch_stdout():
-        loop = asyncio.get_event_loop()
-        stop_event = asyncio.Event()
+    def discovery_cb(name, ip, p):
+        gui.add_or_update_peer(name, ip, p)
 
-        if os.name == 'nt': 
-            pass 
-        else: 
-            loop.add_signal_handler(signal.SIGINT, stop_event.set)
-            loop.add_signal_handler(signal.SIGTERM, stop_event.set)
+    # Inicializar componentes
+    protocol = SecureIMProtocol(dnie, protocol_cb)
+    gui = ChatGUI(protocol, nick, db)
+    mdns = DiscoveryService(port, nick, discovery_cb)
 
-        try:
-            await asyncio.gather(
-                gui.run(),
-                stop_event.wait()
-            )
-        except Exception as e:
-            print(f"Error en la aplicación principal: {e}")
-        finally:
-            print("\nCerrando servicios...")
-            await discovery_service.stop()
-            transport.close()
-            if not gui.app.is_exited:
-                gui.app.exit()
-
+    # Arrancar servidor UDP
+    transport, _ = await loop.create_datagram_endpoint(
+        lambda: protocol, local_addr=('0.0.0.0', port)
+    )
+    
+    # Arrancar Discovery y GUI
+    await mdns.start()
+    try:
+        await gui.run()
+    finally:
+        await mdns.stop()
+        transport.close()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Fix para Windows y selectores asíncronos
+    if sys.platform == 'win32':
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
