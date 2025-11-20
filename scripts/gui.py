@@ -33,7 +33,6 @@ class ChatGUI:
         self.w_input = TextArea(height=3, prompt="> ", multiline=False)
 
         # --- ESTRUCTURA Y FOCO INICIAL ---
-        # CORRECCIÓN: 'focused_element' va aquí en el Layout, no en Application
         self.layout = Layout(
             HSplit([
                 VSplit([
@@ -42,7 +41,7 @@ class ChatGUI:
                 ]),
                 Frame(self.w_input, title=f"Escribe aquí ({my_nick})")
             ]),
-            focused_element=self.w_input  # <--- El cursor empieza aquí
+            focused_element=self.w_input
         )
 
         kb = KeyBindings()
@@ -66,7 +65,6 @@ class ChatGUI:
         self._load_contacts_from_db()
 
     def _get_chat_cursor_position(self):
-        # Auto-scroll forzando el cursor virtual al final
         lines = self._get_chat_content()
         row_count = 0
         for item in lines:
@@ -109,7 +107,6 @@ class ChatGUI:
             status = m['status']
             
             if sender == "Yo":
-                # Alineado a la derecha con Cyan
                 ticks = "✓" if status == 'pending' else "✓✓"
                 line_content = f"{text}   {time} {ticks}"
                 padding = " " * max(0, PAD_WIDTH - len(line_content))
@@ -117,12 +114,10 @@ class ChatGUI:
                 formatted_lines.append(("", padding))
                 formatted_lines.append(("ansicyan bold", f"{line_content}"))
             elif sender == "Sys":
-                # Sistema centrado
                 line_content = f"--- {text} ---"
                 formatted_lines.append(("", "\n"))
                 formatted_lines.append(("ansigray", line_content.center(PAD_WIDTH)))
             else:
-                # Otros a la izquierda con Amarillo
                 formatted_lines.append(("", "\n"))
                 formatted_lines.append(("ansiyellow", f"[{time}] {sender}: {text}"))
                 
@@ -140,11 +135,9 @@ class ChatGUI:
     def add_or_update_peer(self, name_or_cn, ip, port, is_cn=False):
         target_cn = None
         
-        # 1. Búsqueda exacta
         if name_or_cn in self.contacts_state:
             target_cn = name_or_cn
         else:
-            # 2. Búsqueda aproximada para Discovery
             prefix = name_or_cn.split('_')[0]
             for k in self.contact_keys:
                 if k.startswith(prefix):
@@ -161,7 +154,6 @@ class ChatGUI:
             self.contact_keys.append(target_cn)
             if self.current_cn is None: self.current_cn = target_cn
 
-        # Actualización de estado
         if ip is None:
             self.contacts_state[target_cn]["connected"] = False
             self.contacts_state[target_cn]["ip"] = None
@@ -206,10 +198,20 @@ class ChatGUI:
     def handle_enter(self):
         if not self.current_cn: return
         text = self.w_input.text.strip()
-        self.w_input.text = ""
-        if not text: return
-
+        
         state = self.contacts_state[self.current_cn]
+        
+        # CORRECCIÓN: Permitimos Enter vacío SOLO si queremos conectar (Handshake)
+        # Si ya estamos conectados y no hay texto, no hacemos nada
+        if not text and state["connected"]:
+            return
+        # Si no tenemos IP (está offline) y no hay texto, no hacemos nada
+        if not text and not state.get("ip"):
+            return
+
+        # Limpiamos input solo si vamos a procesar algo
+        self.w_input.text = ""
+
         ip = state.get("ip")
         port = None
         
@@ -220,14 +222,24 @@ class ChatGUI:
         if not port: port = 6666 
         timestamp = datetime.now().strftime("%H:%M")
 
+        # Lógica de envío
         if not ip:
-            self.db.add_message(self.current_cn, "Yo", text, "pending", timestamp)
+            # No hay IP conocida
+            if text:
+                self.db.add_message(self.current_cn, "Yo", text, "pending", timestamp)
         elif not state["connected"]:
+            # HAY IP PERO NO CONEXIÓN -> HANDSHAKE
             self.protocol.enviar_handshake(ip, port)
-            self.db.add_message(self.current_cn, "Yo", text, "pending", timestamp)
+            if text:
+                self.db.add_message(self.current_cn, "Yo", text, "pending", timestamp)
+            else:
+                # Feedback visual de que se ha intentado conectar
+                self.db.add_message(self.current_cn, "Sys", "Enviando solicitud de conexión...", "pending", timestamp)
         else:
-            self.protocol.enviar_mensaje(ip, port, text)
-            self.db.add_message(self.current_cn, "Yo", text, "sent", timestamp)
+            # CONECTADO -> ENVÍO NORMAL
+            if text:
+                self.protocol.enviar_mensaje(ip, port, text)
+                self.db.add_message(self.current_cn, "Yo", text, "sent", timestamp)
 
         self.refresh_ui()
 
