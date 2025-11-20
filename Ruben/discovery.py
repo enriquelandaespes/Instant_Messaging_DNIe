@@ -31,9 +31,9 @@ class DiscoveryService:
         self.azc = None
         self.browser = None
         
-        # Generar nombre único para la red (limpiamos espacios para mDNS)
-        safe_nick = self.nick.replace(" ", "")
-        self.my_name = f"{safe_nick}_{self.port}.{config.SERVICE_TYPE}"
+        # CORRECCIÓN: No quitamos espacios para respetar el formato del DNI
+        # Zeroconf suele manejar bien los espacios en los nombres de servicio
+        self.my_name = f"{self.nick}_{self.port}.{config.SERVICE_TYPE}"
 
     async def start(self):
         self.azc = AsyncZeroconf()
@@ -60,9 +60,8 @@ class DiscoveryService:
             asyncio.create_task(self._resolve(zeroconf, service_type, name))
         
         elif state_change is ServiceStateChange.Removed:
-            # --- DETECCIÓN DE DESCONEXIÓN ---
+            # Detectar desconexión
             clean_name = self._clean_service_name(name)
-            # Llamamos al callback con IP=None para indicar desconexión
             self.on_peer(clean_name, None, None)
 
     def _clean_service_name(self, name):
