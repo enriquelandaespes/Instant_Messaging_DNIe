@@ -1,284 +1,287 @@
-# gui.py
+# protocol.py
 import asyncio
-from datetime import datetime
-from prompt_toolkit.application import Application
-from prompt_toolkit.layout import Layout, HSplit, VSplit, Window
-from prompt_toolkit.widgets import TextArea, Frame
-from prompt_toolkit.layout.controls import FormattedTextControl
-from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.document import Document
-from prompt_toolkit.data_structures import Point
+import json
+import base64
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import x25519
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.backends import default_backend
+from cryptography.fernet import Fernet, InvalidToken
 
-class ChatGUI:
-    def __init__(self, protocol, my_nick, db):
-        self.protocol = protocol 
-        self.my_nick = my_nick
-        self.db = db
+class SecureIMProtocol(asyncio.DatagramProtocol):
+    def __init__(self, dnie_manager, db, message_callback):
+        self.dnie = dnie_manager
+        self.db = db 
+        self.message_callback = message_callback 
+        self.transport = None
+
+        self.session_keys = {} 
+        self.peer_ephemeral_public_keys = {} 
+
+        self.handshake_status = {} 
+        self.my_ephemeral_private_keys = {} 
+
+    def connection_made(self, transport):
+        self.transport = transport
+
+    def datagram_received(self, data, addr):
+        ip, port = addr
         
-        self.contact_keys = [] 
-        self.current_cn = None 
+        try:
+            message = json.loads(data.decode())
+            msg_type = message.get("type")
+            sender_cn_from_msg = message.get("sender_cn", f"{ip}:{port}") 
 
-        self.w_contacts = TextArea(focusable=False, width=35)
-        self.chat_control = FormattedTextControl(
-            text=self._get_chat_content,
-            get_cursor_position=self._get_chat_cursor_position,
-            focusable=False 
-        )
-        self.w_chat_window = Window(content=self.chat_control, wrap_lines=True, always_hide_cursor=False)
-        self.w_input = TextArea(height=3, prompt="> ", multiline=False)
+            real_cn = sender_cn_from_msg
+            contact_info = self.db.get_contact_info(sender_cn_from_msg)
+            if contact_info and contact_info.get("ip") == ip and contact_info.get("port") == port:
+                real_cn = sender_cn_from_msg 
 
-        self.layout = Layout(
-            HSplit([
-                VSplit([
-                    Frame(self.w_contacts, title="Vecinos (DNIe)"), 
-                    Frame(self.w_chat_window, title=self._get_chat_title)
-                ]),
-                Frame(self.w_input, title=f"Escribe aquí ({my_nick})")
-            ]),
-            focused_element=self.w_input
-        )
-
-        kb = KeyBindings()
-        @kb.add("c-c")
-        def _(event): event.app.exit()
-        @kb.add("up")
-        def _(event): self.move_selection(-1)
-        @kb.add("down")
-        def _(event): self.move_selection(1)
-        @kb.add("enter")
-        def _(event): asyncio.create_task(self.handle_enter()) 
-
-        self.app = Application(
-            layout=self.layout, 
-            key_bindings=kb, 
-            full_screen=True, 
-            mouse_support=True
-        )
-        
-        self._load_initial_contacts()
-
-    def _get_chat_cursor_position(self):
-        lines = self._get_chat_content()
-        row_count = 0
-        for item in lines:
-            if item[1] == "\n": 
-                row_count += 1
+            if msg_type == "HANDSHAKE_INIT":
+                asyncio.create_task(self._handle_handshake_init(message, addr))
+            elif msg_type == "HANDSHAKE_RESPONSE":
+                asyncio.create_task(self._handle_handshake_response(message, addr))
+            elif msg_type == "ENCRYPTED_MESSAGE":
+                asyncio.create_task(self._handle_encrypted_message(message, addr, real_cn))
             else:
-                row_count += item[1].count('\n') 
-        return Point(x=0, y=row_count)
+                print(f"Mensaje desconocido de {addr}: {message}")
 
-    def _load_initial_contacts(self):
-        for cn in self.db.get_all_contacts().keys():
-            if cn not in self.contact_keys:
-                self.contact_keys.append(cn)
-        
-        self.contact_keys.sort()
-        if self.contact_keys and self.current_cn is None:
-            self.current_cn = self.contact_keys[0]
-        self.refresh_ui()
+        except json.JSONDecodeError:
+            print(f"Mensaje no JSON de {addr}: {data}")
+        except Exception as e:
+            print(f"Error procesando mensaje de {addr}: {e}")
 
-    def _get_chat_title(self):
-        if not self.current_cn: return "Chat Seguro"
-        
-        contact_info = self.db.get_contact_info(self.current_cn)
-        
-        status_text = ""
-        if contact_info and contact_info.get("is_connected"):
-             status_text = "🟢 CONECTADO"
-        elif contact_info and contact_info.get("ip") and contact_info.get("port"):
-             status_text = "🟡 DISPONIBLE" 
-        else:
-             status_text = "🔴 OFFLINE"
-             
-        return f"Chat con {self.current_cn} [{status_text}]"
+    async def _handle_handshake_init(self, message, addr):
+        ip, port = addr
+        peer_nick_from_zeroconf = message["sender_nick"] 
+        peer_ephemeral_public_bytes = base64.b64decode(message["public_key"])
+        peer_dnie_cert_der = base64.b64decode(message["dnie_cert"])
+        peer_dnie_signature = base64.b64decode(message["dnie_signature"])
 
-    def _get_chat_content(self):
-        if not self.current_cn: return [("class:info", "Esperando contactos...")]
+        peer_cn_from_cert = self._get_cn_from_cert(x509.load_der_x509_certificate(peer_dnie_cert_der, default_backend()))
         
-        msgs = self.db.get_history(self.current_cn)
-        formatted_lines = []
-        PAD_WIDTH = 80 
+        self.db.add_or_update_contact(peer_cn_from_cert, ip=ip, port=port, update_seen=True)
         
-        for m in msgs:
-            sender = m.get('sender', 'Desconocido')
-            text = m.get('text', '')
-            time = m.get('time', '??:??')
-            status = m.get('status', '')
+        if self.db.get_contact_info(peer_cn_from_cert).get("is_connected"):
+            print(f"Ya conectado a {peer_cn_from_cert}. Ignorando HANDSHAKE_INIT redundante.")
+            return
+
+        print(f"Recibido HANDSHAKE_INIT de {peer_cn_from_cert} ({addr})")
+        self.handshake_status[peer_cn_from_cert] = "RESPONSED" 
+
+        try:
+            peer_cert = x509.load_der_x509_certificate(peer_dnie_cert_der, default_backend())
+            peer_ephemeral_public_key = x25519.X25519PublicKey.from_public_bytes(peer_ephemeral_public_bytes)
+            peer_cert.public_key().verify(
+                peer_dnie_signature,
+                peer_ephemeral_public_key.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw),
+                hashes.SHA256()
+            )
             
-            if sender == self.my_nick: 
-                ticks = ""
-                if status == 'pending': ticks = "✓" 
-                elif status == 'sent': ticks = "✓" 
-                elif status == 'received': ticks = "✓✓" 
-                
-                line_content = f"{text}   {time} {ticks}"
-                padding = " " * max(0, PAD_WIDTH - len(line_content))
-                formatted_lines.append(("", "\n"))
-                formatted_lines.append(("", padding))
-                formatted_lines.append(("ansicyan bold", f"{line_content}"))
-            elif status == "system": 
-                formatted_lines.append(("", "\n"))
-                formatted_lines.append(("ansigray", f"--- {text} ---".center(PAD_WIDTH)))
-            elif status == "error": 
-                formatted_lines.append(("", "\n"))
-                formatted_lines.append(("ansired", f"--- {text} ---".center(PAD_WIDTH)))
-            else: 
-                formatted_lines.append(("", "\n"))
-                formatted_lines.append(("ansiyellow", f"[{time}] {sender}: {text}"))
-                
-        return formatted_lines
+            my_ephemeral_private_key = x25519.X25519PrivateKey.generate()
+            # IMPORTANTE: No guardamos esta clave privada en self.my_ephemeral_private_keys
+            # porque solo la necesitamos para este intercambio concreto.
+            
+            shared_key = my_ephemeral_private_key.exchange(peer_ephemeral_public_key)
+            session_key = HKDF(
+                algorithm=hashes.SHA256(),
+                length=32,
+                salt=None,
+                info=b'handshake data',
+                backend=default_backend()
+            ).derive(shared_key)
+            
+            self.session_keys[peer_cn_from_cert] = Fernet(base64.urlsafe_b64encode(session_key))
+            self.peer_ephemeral_public_keys[peer_cn_from_cert] = peer_ephemeral_public_key 
 
-    def move_selection(self, delta):
-        if not self.contact_keys: return
-        idx = 0
-        if self.current_cn in self.contact_keys:
-            idx = self.contact_keys.index(self.current_cn)
-        new_idx = (idx + delta) % len(self.contact_keys)
-        self.current_cn = self.contact_keys[new_idx]
-        self.refresh_ui()
+            my_dnie_cert, my_dnie_signature = self.dnie.obtener_credenciales()
+            response_message = {
+                "type": "HANDSHAKE_RESPONSE",
+                "sender_cn": self.dnie.get_user_name(),
+                "public_key": base64.b64encode(my_ephemeral_private_key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)).decode(),
+                "dnie_cert": base64.b64encode(my_dnie_cert).decode(),
+                "dnie_signature": base64.b64encode(my_dnie_signature).decode()
+            }
+            self.transport.sendto(json.dumps(response_message).encode(), addr)
 
-    def add_or_update_peer(self, discovered_name, ip, port):
-        cn_to_manage = discovered_name 
+            self.db.set_contact_connected(peer_cn_from_cert, True)
+            self.message_callback(addr, "HANDSHAKE_OK", peer_cn_from_cert)
+            self.handshake_status[peer_cn_from_cert] = "COMPLETED"
+            print(f"Handshake completado (RESPONSED) con {peer_cn_from_cert}")
 
-        found_cn_in_db = None
-        for cn_key, data in self.db.get_all_contacts().items():
-            if data.get("ip") == ip and data.get("port") == port:
-                found_cn_in_db = cn_key
+        except Exception as e:
+            print(f"Error en HANDSHAKE_INIT de {addr}: {e}")
+            self.db.set_contact_connected(peer_cn_from_cert, False)
+            self.message_callback(addr, "HANDSHAKE_ERROR", peer_cn_from_cert)
+            self.handshake_status[peer_cn_from_cert] = "FAILED"
+
+    async def _handle_handshake_response(self, message, addr):
+        ip, port = addr
+        peer_cn_from_msg = message["sender_cn"] 
+        peer_ephemeral_public_bytes = base64.b64decode(message["public_key"])
+        peer_dnie_cert_der = base64.b64decode(message["dnie_cert"])
+        peer_dnie_signature = base64.b64decode(message["dnie_signature"])
+        
+        peer_cert = x509.load_der_x509_certificate(peer_dnie_cert_der, default_backend())
+        peer_cn_from_cert = self._get_cn_from_cert(peer_cert)
+
+        if peer_cn_from_msg != peer_cn_from_cert:
+            print(f"ERROR: CN del mensaje '{peer_cn_from_msg}' no coincide con el CN del certificado '{peer_cn_from_cert}' de {addr}")
+            self.db.set_contact_connected(peer_cn_from_cert, False) 
+            self.message_callback(addr, "HANDSHAKE_ERROR", peer_cn_from_cert)
+            self.handshake_status[peer_cn_from_cert] = "FAILED"
+            return
+        
+        peer_cn = peer_cn_from_cert 
+
+        if self.handshake_status.get(peer_cn) != "INITIATED":
+            print(f"Recibido HANDSHAKE_RESPONSE inesperado de {peer_cn} ({addr}). Estado actual: {self.handshake_status.get(peer_cn)}")
+            return 
+        
+        print(f"Recibido HANDSHAKE_RESPONSE de {peer_cn} ({addr})")
+
+        try:
+            peer_ephemeral_public_key = x25519.X25519PublicKey.from_public_bytes(peer_ephemeral_public_bytes)
+            peer_cert.public_key().verify(
+                peer_dnie_signature,
+                peer_ephemeral_public_key.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw),
+                hashes.SHA256()
+            )
+
+            my_ephemeral_private_key = self.my_ephemeral_private_keys.get(peer_cn)
+            if not my_ephemeral_private_key:
+                raise RuntimeError(f"No se encontró clave efímera privada local para finalizar handshake con {peer_cn}.")
+
+            shared_key = my_ephemeral_private_key.exchange(peer_ephemeral_public_key)
+            session_key = HKDF(
+                algorithm=hashes.SHA256(),
+                length=32,
+                salt=None,
+                info=b'handshake data',
+                backend=default_backend()
+            ).derive(shared_key)
+            
+            self.session_keys[peer_cn] = Fernet(base64.urlsafe_b64encode(session_key))
+            self.peer_ephemeral_public_keys[peer_cn] = peer_ephemeral_public_key
+
+            self.db.set_contact_connected(peer_cn, True)
+            self.message_callback(addr, "HANDSHAKE_OK", peer_cn)
+            self.handshake_status[peer_cn] = "COMPLETED"
+            del self.my_ephemeral_private_keys[peer_cn] 
+            print(f"Handshake completado (INITIATED) con {peer_cn}. Clave de sesión establecida.")
+
+        except Exception as e:
+            print(f"Error en HANDSHAKE_RESPONSE de {addr}: {e}")
+            self.db.set_contact_connected(peer_cn, False)
+            self.message_callback(addr, "HANDSHAKE_ERROR", peer_cn)
+            self.handshake_status[peer_cn] = "FAILED"
+            if peer_cn in self.my_ephemeral_private_keys:
+                del self.my_ephemeral_private_keys[peer_cn]
+
+
+    async def _handle_encrypted_message(self, message, addr, sender_cn):
+        encrypted_text = base64.b64decode(message["data"])
+        
+        if sender_cn not in self.session_keys:
+            print(f"ERROR: Recibido mensaje cifrado de {sender_cn} sin clave de sesión. Estado Handshake: {self.handshake_status.get(sender_cn)}")
+            # Si recibimos un mensaje cifrado sin sesión, intentamos un handshake de vuelta.
+            self.enviar_handshake(addr[0], addr[1])
+            self.message_callback(addr, "Sys: Error de descifrado. Reintentando conexión...", sender_cn)
+            return
+
+        try:
+            decrypted_text = self.session_keys[sender_cn].decrypt(encrypted_text).decode()
+            self.message_callback(addr, decrypted_text, sender_cn)
+            self.db.set_contact_connected(sender_cn, True)
+
+        except InvalidToken:
+            print(f"ERROR: Token Fernet inválido de {sender_cn} (clave incorrecta o mensaje manipulado).")
+            self.db.set_contact_connected(sender_cn, False) 
+            self.message_callback(addr, "ERROR_CIFRADO", sender_cn)
+            # No forzamos FAILED aquí para permitir reintentos si fue un paquete corrupto aislado
+        except Exception as e:
+            print(f"Error genérico al descifrar mensaje de {addr}: {e}")
+            self.db.set_contact_connected(sender_cn, False)
+            self.message_callback(addr, "ERROR_CIFRADO", sender_cn)
+
+    def enviar_handshake(self, peer_ip, peer_port):
+        peer_cn = None 
+        for cn, info in self.db.get_all_contacts().items():
+            if info.get("ip") == peer_ip and info.get("port") == peer_port:
+                peer_cn = cn
                 break
         
-        if found_cn_in_db:
-            cn_to_manage = found_cn_in_db 
-        
-        self.db.add_or_update_contact(cn_to_manage, ip=ip, port=port, update_seen=True)
-        
-        if cn_to_manage not in self.contact_keys:
-            self.contact_keys.append(cn_to_manage)
-            self.contact_keys.sort()
-        
-        if self.current_cn is None:
-            self.current_cn = cn_to_manage
-
-        self.refresh_ui()
-
-    async def on_protocol_msg(self, addr, text, real_cn_from_cert):
-        # Asegurar que el contacto existe en la DB con el CN real
-        self.db.add_or_update_contact(real_cn_from_cert, ip=addr[0], port=addr[1], update_seen=True)
-        
-        if real_cn_from_cert not in self.contact_keys:
-            self.contact_keys.append(real_cn_from_cert)
-            self.contact_keys.sort()
-            
-        timestamp = datetime.now().strftime("%H:%M")
-
-        if text == "HANDSHAKE_OK":
-            self.db.set_contact_connected(real_cn_from_cert, True)
-            if not any(m.get('text') == "CONEXIÓN SEGURA ESTABLECIDA" and m.get('sender') == "Sys" for m in self.db.get_history(real_cn_from_cert)):
-                 self.db.add_message(real_cn_from_cert, "Sys", "CONEXIÓN SEGURA ESTABLECIDA", "system", timestamp)
-            await self.check_pending_messages(real_cn_from_cert, addr[0], addr[1]) 
-
-        elif text == "HANDSHAKE_START":
-            if not any(m.get('text') == "Iniciando conexión segura..." and m.get('sender') == "Sys" for m in self.db.get_history(real_cn_from_cert)):
-                self.db.add_message(real_cn_from_cert, "Sys", "Iniciando conexión segura...", "system", timestamp)
-
-        elif text == "HANDSHAKE_ERROR":
-            self.db.set_contact_connected(real_cn_from_cert, False)
-            self.db.add_message(real_cn_from_cert, "Sys", "ERROR: Falló la conexión segura.", "error", timestamp)
-            
-        elif text == "ERROR_CIFRADO":
-             self.db.set_contact_connected(real_cn_from_cert, False)
-             self.db.add_message(real_cn_from_cert, "Sys", "ERROR: Mensaje corrupto o clave inválida.", "error", timestamp)
-
-        else: # Mensaje normal recibido
-            self.db.add_message(real_cn_from_cert, real_cn_from_cert, text, "received", timestamp)
-            self.db.set_contact_connected(real_cn_from_cert, True) 
-
-        if self.current_cn is None:
-            # Si no hay contacto seleccionado, seleccionar el que acaba de hablar
-            self.current_cn = real_cn_from_cert
-        
-        self.refresh_ui()
-
-    async def check_pending_messages(self, cn, ip, port):
-        pending = self.db.get_pending_messages(cn)
-        if not pending: return
-        
-        sent_indices = []
-        for i, msg in pending:
-            await asyncio.sleep(0.05) 
-            self.protocol.enviar_mensaje(ip, port, msg["text"])
-            sent_indices.append(i)
-        
-        if sent_indices:
-            self.db.mark_message_status(cn, sent_indices, "sent")
-            self.refresh_ui()
-
-    async def handle_enter(self):
-        if not self.current_cn: return
-        text = self.w_input.text.strip()
-        
-        contact_info = self.db.get_contact_info(self.current_cn)
-        if not contact_info: 
-            self.w_input.text = ""
-            self.refresh_ui()
+        if not peer_cn:
+            print(f"No se puede iniciar handshake: CN desconocido para {peer_ip}:{peer_port}")
             return
 
-        ip = contact_info.get("ip")
-        port = contact_info.get("port") 
-        is_connected = contact_info.get("is_connected")
-        
-        timestamp = datetime.now().strftime("%H:%M")
-
-        # CASO 1: No tenemos IP/Puerto (Offline total)
-        if not ip or not port:
-            if text:
-                self.db.add_message(self.current_cn, self.my_nick, text, "pending", timestamp)
-                self.db.add_message(self.current_cn, "Sys", "Mensaje en cola. Esperando descubrir usuario...", "system", timestamp)
-            self.w_input.text = ""
-            self.refresh_ui()
+        if self.db.get_contact_info(peer_cn).get("is_connected"):
+            print(f"Ya conectado a {peer_cn}. No se inicia handshake.")
             return
 
-        # CASO 2: Tenemos IP pero NO conexión segura -> Iniciar Handshake
-        if not is_connected and self.protocol.handshake_status.get(self.current_cn) not in ["INITIATED", "RESPONSED"]:
-            self.protocol.enviar_handshake(ip, port)
-            
-            if text:
-                self.db.add_message(self.current_cn, self.my_nick, text, "pending", timestamp)
-            
-            self.w_input.text = ""
-            self.refresh_ui()
+        current_status = self.handshake_status.get(peer_cn)
+        if current_status in ["INITIATED", "RESPONSED"]:
+            print(f"Handshake con {peer_cn} ya en progreso (Estado: {current_status}). No se inicia uno nuevo.")
             return
-        
-        # CASO 3: Hay handshake en progreso o ya estamos conectados
-        if text:
-            if is_connected: 
-                self.protocol.enviar_mensaje(ip, port, text)
-                self.db.add_message(self.current_cn, self.my_nick, text, "sent", timestamp)
-            else: 
-                self.db.add_message(self.current_cn, self.my_nick, text, "pending", timestamp)
-                self.db.add_message(self.current_cn, "Sys", "Mensaje en cola. Conexión en progreso...", "system", timestamp)
             
-            self.w_input.text = ""
-            self.refresh_ui()
+        print(f"Iniciando handshake (INITIATED) con {peer_cn} ({peer_ip}:{peer_port})...")
+        self.handshake_status[peer_cn] = "INITIATED" 
 
-    def refresh_ui(self):
-        lines = []
-        all_contact_cns = sorted(list(self.contact_keys)) 
+        try:
+            my_ephemeral_private_key = x25519.X25519PrivateKey.generate()
+            self.my_ephemeral_private_keys[peer_cn] = my_ephemeral_private_key
+            
+            my_dnie_cert, my_dnie_signature = self.dnie.obtener_credenciales()
+            message = {
+                "type": "HANDSHAKE_INIT",
+                "sender_nick": self.dnie.get_user_name(), 
+                "public_key": base64.b64encode(my_ephemeral_private_key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)).decode(),
+                "dnie_cert": base64.b64encode(my_dnie_cert).decode(),
+                "dnie_signature": base64.b64encode(my_dnie_signature).decode()
+            }
+            self.transport.sendto(json.dumps(message).encode(), (peer_ip, peer_port))
+            
+            self.message_callback((peer_ip, peer_port), "HANDSHAKE_START", peer_cn)
 
-        for cn_key in all_contact_cns:
-            contact_info = self.db.get_contact_info(cn_key)
-            if not contact_info: continue
+        except Exception as e:
+            print(f"Error al enviar handshake a {peer_ip}:{peer_port}: {e}")
+            self.handshake_status[peer_cn] = "FAILED"
+            self.message_callback((peer_ip, peer_port), "HANDSHAKE_ERROR", peer_cn)
+            if peer_cn in self.my_ephemeral_private_keys:
+                del self.my_ephemeral_private_keys[peer_cn]
 
-            icon = "🔴" 
-            if contact_info.get("is_connected"):
-                icon = "🟢" 
-            elif contact_info.get("ip") and contact_info.get("port"): 
-                icon = "🟡" 
+    def enviar_mensaje(self, peer_ip, peer_port, text_message):
+        peer_cn = None 
+        for cn, info in self.db.get_all_contacts().items():
+            if info.get("ip") == peer_ip and info.get("port") == peer_port:
+                peer_cn = cn
+                break
 
-            prefix = "➤ " if cn_key == self.current_cn else "  "
-            lines.append(f"{prefix}{icon} {cn_key}")
-        
-        self.w_contacts.text = "\n".join(lines)
-        self.app.invalidate()
+        if not peer_cn:
+            print(f"No se puede enviar mensaje: CN desconocido para {peer_ip}:{peer_port}")
+            return
 
-    async def run(self):
-        await self.app.run_async()
+        if not self.db.get_contact_info(peer_cn).get("is_connected") or peer_cn not in self.session_keys:
+            print(f"INTENTO DE ENVÍO FALLIDO a {peer_cn}: Sin conexión segura o clave de sesión.")
+            self.enviar_handshake(peer_ip, peer_port)
+            return
+
+        try:
+            encrypted_data = self.session_keys[peer_cn].encrypt(text_message.encode())
+            message = {
+                "type": "ENCRYPTED_MESSAGE",
+                "sender_cn": self.dnie.get_user_name(), 
+                "data": base64.b64encode(encrypted_data).decode()
+            }
+            self.transport.sendto(json.dumps(message).encode(), (peer_ip, peer_port))
+            print(f"Mensaje cifrado enviado a {peer_cn}")
+        except Exception as e:
+            print(f"Error al enviar mensaje cifrado a {peer_ip}:{peer_port}: {e}")
+
+    def _get_cn_from_cert(self, cert):
+        cn_attributes = cert.subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)
+        if cn_attributes:
+            raw_name = cn_attributes[0].value
+            return raw_name.replace("(AUTENTICACIÓN)", "").replace("(FIRMA)", "").strip()
+        return "CN_Desconocido"
