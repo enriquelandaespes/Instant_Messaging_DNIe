@@ -6,7 +6,6 @@ from prompt_toolkit.layout import Layout, HSplit, VSplit, Window
 from prompt_toolkit.widgets import TextArea, Frame
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.data_structures import Point
 from prompt_toolkit.layout import ScrollablePane
 
 class ChatGUI:
@@ -18,24 +17,19 @@ class ChatGUI:
         self.contact_keys = [] 
         self.current_cn = None 
         self.pending_handshakes = set()
-        self._last_cursor_y = 0
-        self._auto_scroll = True  # Flag para scroll automático
         self._timeout_check_task = None  # Tarea para verificar timeouts 
 
         # --- Widgets ---
         self.w_contacts = TextArea(focusable=False, width=35)
         
-        self.chat_control = FormattedTextControl(
+        # Usar ScrollablePane con FormattedTextControl para mantener colores
+        chat_control = FormattedTextControl(
             text=self._get_chat_content,
-            get_cursor_position=self._get_chat_cursor_position,
-            focusable=False 
+            focusable=True
         )
+        chat_window = Window(content=chat_control, wrap_lines=True)
+        self.w_chat = ScrollablePane(chat_window)
         
-        self.w_chat_window = Window(
-            content=self.chat_control, 
-            wrap_lines=True, 
-            always_hide_cursor=False
-        )
         self.w_input = TextArea(height=3, prompt="> ", multiline=False)
 
         # --- Layout ---
@@ -43,7 +37,7 @@ class ChatGUI:
             HSplit([
                 VSplit([
                     Frame(self.w_contacts, title="Vecinos (DNIe)"), 
-                    Frame(self.w_chat_window, title=self._get_chat_title)
+                    Frame(self.w_chat, title=self._get_chat_title)
                 ]),
                 Frame(self.w_input, title=f"Escribe aquí ({my_nick})")
             ]),
@@ -79,9 +73,6 @@ class ChatGUI:
         )
         self._load_initial_contacts()
 
-    def _get_chat_cursor_position(self):
-        return Point(x=0, y=self._last_cursor_y)
-    
     def _format_timestamp(self, time_str, full_date_str=None):
         """Convierte timestamp a formato legible: 'Hoy 17:59', 'Ayer 18:30', '21 Nov 10:15'"""
         try:
@@ -149,37 +140,32 @@ class ChatGUI:
         return f"Chat con {display_name} [{status}]"
 
     def _get_chat_content(self):
-        if not self.current_cn: 
-            self._last_cursor_y = 0
+        """Genera contenido del chat con colores usando FormattedText"""
+        if not self.current_cn:
             return [("class:info", "Esperando contactos...")]
         
         msgs = list(self.db.get_history(self.current_cn))
         formatted_lines = []
-        PAD_WIDTH = 80 
-        line_count = 0
+        PAD_WIDTH = 80
         last_date = None
 
         for m in msgs:
             sender, text, time, status = m.get('sender'), m.get('text'), m.get('time'), m.get('status', '')
-            full_date = m.get('full_date')  # Fecha completa si existe
+            full_date = m.get('full_date')
             
             # Añadir separador de fecha si cambió el día
             formatted_time = self._format_timestamp(time, full_date)
-            current_date = formatted_time.split()[0] if ' ' in formatted_time else None  # "Hoy", "Ayer", "21 Nov", etc.
+            current_date = formatted_time.split()[0] if ' ' in formatted_time else None
             
-            if current_date and last_date != current_date and current_date != time:  # Solo si no falló el parse
-                if last_date is not None:  # No mostrar en el primer mensaje
+            if current_date and last_date != current_date and current_date != time:
+                if last_date is not None:
                     formatted_lines.append(("", "\n"))
-                    line_count += 1
-                # Fecha más pequeña y discreta
                 separator = f"- {current_date} -"
                 center_pad = " " * max(0, (PAD_WIDTH - len(separator)) // 2)
                 formatted_lines.append(("class:date-separator", f"\n{center_pad}{separator}\n"))
-                line_count += 2
                 last_date = current_date
             
             formatted_lines.append(("", "\n"))
-            line_count += 1
             
             # Mensajes del sistema
             if sender == "Sys":
@@ -188,30 +174,22 @@ class ChatGUI:
             
             # Mensajes RECIBIDOS (del otro usuario) - SIN TICK, a la izquierda
             elif status == 'received' or sender != self.my_nick:
-                # Hora más pequeña y discreta
                 formatted_lines.append(("class:time-small", f"[{formatted_time}] "))
-                formatted_lines.append(("ansiyellow", f"{sender}:\n")) 
-                line_count += 1 
-                formatted_lines.append(("ansiyellow", f" > {text}"))
+                formatted_lines.append(("ansiyellow", f"{sender}:\n > {text}"))
             
             # Mensajes ENVIADOS por mí - CON TICK, a la derecha
             else:
                 if status == 'delivered': tick = "✓✓"
                 elif status == 'sent': tick = "✓"
                 elif status == 'pending': tick = "🕒"
-                else: tick = "✓"  # Por defecto un tick
+                else: tick = "✓"
                 
-                # Separar texto de hora para usar estilos diferentes
                 time_and_tick = f"{formatted_time} {tick}"
                 padding = " " * max(0, PAD_WIDTH - len(text) - len(time_and_tick) - 3)
-                
                 formatted_lines.append(("", padding))
                 formatted_lines.append(("ansicyan bold", text))
                 formatted_lines.append(("", "   "))
                 formatted_lines.append(("class:time-small-sent", time_and_tick))
-        
-        # Establecer cursor al final para scroll automático
-        self._last_cursor_y = line_count
         
         return formatted_lines
 
@@ -380,7 +358,7 @@ class ChatGUI:
             
             msg_id = self.db.add_message(self.current_cn, self.my_nick, text, "sent", ts)
             self.w_input.text = ""
-            
+            # Reactivar scroll automático al enviar mensaje
             if not self.protocol.enviar_mensaje(ip, port, text, msg_id):
                 # Si falla el envío, marcar como desconectado y cambiar estado a pending
                 self.db.mark_message_status(self.current_cn, msg_id, "pending")
