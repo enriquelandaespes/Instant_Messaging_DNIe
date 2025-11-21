@@ -115,6 +115,65 @@ class JsonEncryptedDB:
                 self.data["contacts"][cn]["port"] = None
             self.save()
 
+    def find_contact_by_address(self, ip, port):
+        """
+        Busca un contacto por su dirección IP:puerto.
+        Devuelve el CN si existe, None si no.
+        """
+        for cn, data in self.data["contacts"].items():
+            if data.get("ip") == ip and data.get("port") == port:
+                return cn
+        return None
+
+    def consolidate_contact(self, old_cn, new_cn):
+        """
+        Consolida dos contactos en uno solo.
+        Mueve todos los mensajes y datos del contacto antiguo al nuevo.
+        Elimina el contacto antiguo.
+        """
+        if old_cn not in self.data["contacts"]:
+            print(f"⚠️ Contacto antiguo '{old_cn}' no existe. No se puede consolidar.")
+            return False
+        
+        if old_cn == new_cn:
+            print(f"⚠️ El contacto antiguo y nuevo son iguales ('{old_cn}'). No se consolida.")
+            return False
+        
+        old_contact = self.data["contacts"][old_cn]
+        
+        # Si el nuevo contacto no existe, crearlo
+        if new_cn not in self.data["contacts"]:
+            self.data["contacts"][new_cn] = {
+                "ip": old_contact.get("ip"),
+                "port": old_contact.get("port"),
+                "is_connected": old_contact.get("is_connected", False),
+                "last_seen": old_contact.get("last_seen"),
+                "msgs": []
+            }
+        
+        new_contact = self.data["contacts"][new_cn]
+        
+        # Actualizar IP y puerto del nuevo contacto con los del antiguo
+        if old_contact.get("ip"):
+            new_contact["ip"] = old_contact["ip"]
+        if old_contact.get("port"):
+            new_contact["port"] = old_contact["port"]
+        if old_contact.get("is_connected"):
+            new_contact["is_connected"] = old_contact["is_connected"]
+        if old_contact.get("last_seen"):
+            new_contact["last_seen"] = old_contact["last_seen"]
+        
+        # Migrar todos los mensajes del contacto antiguo al nuevo
+        if old_contact.get("msgs"):
+            new_contact["msgs"].extend(old_contact["msgs"])
+        
+        # Eliminar el contacto antiguo
+        del self.data["contacts"][old_cn]
+        
+        self.save()
+        print(f"✅ Contactos consolidados: '{old_cn}' → '{new_cn}'")
+        return True
+
     def add_message(self, cn, sender, text, status='pending', timestamp=None):
         """
         Añade un mensaje al historial de un contacto.
