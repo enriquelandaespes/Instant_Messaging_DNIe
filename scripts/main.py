@@ -28,6 +28,7 @@ async def main():
     my_nick = "Desconocido"
     
     try:
+        # 1. Pedir PIN de forma oculta
         pin = getpass("Introduce el PIN de tu DNIe: ").strip() 
         
         if not pin:
@@ -37,12 +38,14 @@ async def main():
         print("⌛ Cargando DNIe...")
         dnie_manager = DNIeManager(pin) 
 
+        # 2. Obtener Nick y ID único
         my_nick = dnie_manager.get_user_name()
         db_id = dnie_manager.get_unique_id() 
         
         print(f"✅ Usuario DNIe: {my_nick}")
         print(f"🔑 ID Base de Datos: {db_id[:8]}...")
 
+        # 3. Inicializar Base de Datos Cifrada
         db = JsonEncryptedDB(dnie_manager, db_id)
 
     except pkcs11.exceptions.PinIncorrect:
@@ -55,19 +58,19 @@ async def main():
         print(f"\n❌ Error Crítico al iniciar: {e}")
         return
 
+    # --- Inicio del sistema ---
     loop = asyncio.get_running_loop()
     
-    # Definir callbacks
+    # Definir callbacks (usando create_task para la GUI async)
     def protocol_cb(addr, text, nombre):
-        # CORRECCIÓN: Como on_protocol_msg es async, hay que crear una tarea
         asyncio.create_task(gui.on_protocol_msg(addr, text, nombre))
 
     def discovery_cb(name, ip, p):
-        # add_or_update_peer no es async, se puede llamar directamente
         gui.add_or_update_peer(name, ip, p)
 
     # Inicializar componentes
-    protocol_instance = SecureIMProtocol(dnie_manager, db, protocol_cb) 
+    # Se pasan dnie_manager, db y el callback al protocolo
+    protocol_instance = SecureIMProtocol(dnie_manager, db, protocol_cb)
     gui = ChatGUI(protocol=protocol_instance, my_nick=my_nick, db=db)
     
     # Discovery
@@ -80,7 +83,7 @@ async def main():
         local_addr=('0.0.0.0', port)
     )
     
-    # Arrancar GUI
+    # Arrancar GUI con manejo de cierre limpio
     with patch_stdout():
         stop_event = asyncio.Event()
 
@@ -89,23 +92,46 @@ async def main():
             loop.add_signal_handler(signal.SIGTERM, stop_event.set)
 
         try:
-            await asyncio.gather(
-                gui.run(),
-                stop_event.wait()
-            )
+            tasks = [
+                asyncio.create_task(gui.run()),
+                asyncio.create_task(stop_event.wait())
+            ]
+            # Esperar a que la GUI termine o se pulse Ctrl+C
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+
+            # Cancelar tareas pendientes
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+        except KeyboardInterrupt:
+            pass # Captura Ctrl+C directo si no funcionaron las señales
         except Exception as e:
             print(f"Error en la aplicación principal: {e}")
         finally:
             print("\nCerrando servicios...")
             await discovery_service.stop()
-            transport.close()
-            if not gui.app.is_exited:
-                gui.app.exit()
+            if transport:
+                transport.close()
+            
+            # Intentar cerrar la GUI limpiamente
+            try:
+                if gui.app.is_running:
+                    gui.app.exit()
+            except Exception:
+                pass
 
 if __name__ == "__main__":
     if sys.platform == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
+        # Captura final para evitar traceback al cerrar
+        pass
+    except Exception:
         pass
