@@ -52,21 +52,21 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             cert_bytes = payload[offset : offset+cert_len]
             offset += cert_len
             
-            # (Ignoramos firma pero leemos offset)
             _ = payload[offset:]
 
-            # Nombre DNIe limpio
+            # --- LIMPIEZA DE NOMBRE ---
             try:
                 cert_obj = x509.load_der_x509_certificate(cert_bytes, default_backend())
                 cn_attrs = cert_obj.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
                 if cn_attrs:
-                    nombre = cn_attrs[0].value.replace("(Autenticación)", "").replace("(Firma)", "").strip()
+                    raw = cn_attrs[0].value
+                    # Limpieza insensible a mayúsculas/minúsculas
+                    nombre = raw.replace("(AUTENTICACIÓN)", "").replace("(Autenticación)", "").replace("(FIRMA)", "").replace("(Firma)", "").strip()
                 else:
                     nombre = "DNIe Desconocido"
             except:
                 nombre = "Error Certificado"
 
-            # Crypto
             peer_key_obj = x25519.X25519PublicKey.from_public_bytes(peer_pub_bytes)
             shared_secret = self.dnie.private_key.exchange(peer_key_obj)
             session_key = hashlib.blake2s(shared_secret, digest_size=32).digest()
@@ -76,19 +76,15 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 'name': nombre,
                 'state': 'ESTABLISHED'
             }
-            self.handshake_in_progress[addr] = "ESTABLISHED"
             
             if self.callback:
                 self.callback(addr, "HANDSHAKE_OK", nombre)
 
             if not is_response:
                 self._enviar_paquete_credenciales(addr[0], addr[1], tipo=PKT_HANDSHAKE_RESP)
-                self.handshake_in_progress[addr] = "RESPONSED"
 
         except Exception as e:
             print(f"Handshake Error: {e}")
-            if addr in self.handshake_in_progress:
-                del self.handshake_in_progress[addr]
 
     def handle_message(self, payload, addr):
         if addr not in self.sessions: return
@@ -106,8 +102,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         except: pass
 
     def enviar_handshake(self, ip, port):
-        addr = (ip, port)
-        self.handshake_in_progress[addr] = "INITIATED"
         self._enviar_paquete_credenciales(ip, port, tipo=PKT_HANDSHAKE_INIT)
 
     def _enviar_paquete_credenciales(self, ip, port, tipo):
@@ -119,18 +113,13 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 struct.pack("!H", len(cert)) + cert + firma
             )
             self.transport.sendto(packet, (ip, port))
-        except Exception as e:
-            print(f"Error env credenciales: {e}")
-            if (ip, port) in self.handshake_in_progress:
-                del self.handshake_in_progress[(ip, port)]
+        except Exception:
+            pass
 
     def enviar_mensaje(self, ip, port, texto):
-        """ Devuelve True si se envió, False si no hay conexión """
         addr = (ip, port)
-        
-        # 1. COMPROBACIÓN DE CONEXIÓN
+        # Comprobación real de conexión
         if addr not in self.sessions:
-            # No hay sesión criptográfica establecida
             return False 
         
         try:
@@ -139,7 +128,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             ciphertext = cipher.encrypt(nonce, texto.encode('utf-8'), None)
             packet = struct.pack("B", PKT_MSG) + self.my_cid + nonce + ciphertext
             self.transport.sendto(packet, addr)
-            return True # Enviado correctamente
-        except Exception as e:
-            print(f"Error socket msg: {e}")
-            return False # Fallo en el envío
+            return True
+        except:
+            return False
