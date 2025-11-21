@@ -117,6 +117,17 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
 
     def enviar_handshake(self, ip, port):
         self._enviar_paquete_credenciales(ip, port, tipo=PKT_HANDSHAKE_INIT)
+    
+    def cerrar_sesion(self, ip, port):
+        """Cierra una sesión existente"""
+        addr = (ip, port)
+        if addr in self.sessions:
+            del self.sessions[addr]
+    
+    def tiene_sesion(self, ip, port):
+        """Verifica si existe una sesión activa"""
+        addr = (ip, port)
+        return addr in self.sessions
 
     def _enviar_paquete_credenciales(self, ip, port, tipo):
         if not self.transport: return

@@ -56,6 +56,8 @@ class ChatGUI:
         def _(event): self.move_selection(1)
         @kb.add("enter")
         def _(event): asyncio.create_task(self.handle_enter())
+        @kb.add("c-d")
+        def _(event): self.force_disconnect()  # Ctrl+D para forzar desconexión (debug)
 
         self.app = Application(layout=self.layout, key_bindings=kb, full_screen=True, mouse_support=True)
         self._load_initial_contacts()
@@ -225,6 +227,8 @@ class ChatGUI:
             
             # Marcar como desconectado y actualizar UI inmediatamente
             self.db.set_contact_connected(self.current_cn, False)
+            # Cerrar sesión vieja en el protocolo si existe
+            self.protocol.cerrar_sesion(ip, port)
             self.refresh_ui()  # Actualizar para mostrar 🔴 inmediatamente
             
             # Intentar reconectar si no está ya intentando
@@ -256,6 +260,21 @@ class ChatGUI:
 
         # Si está conectado y hay texto, enviar
         if text:
+            # Verificar que realmente haya sesión en el protocolo
+            if not self.protocol.tiene_sesion(ip, port):
+                # No hay sesión activa, marcar como desconectado
+                self.db.set_contact_connected(self.current_cn, False)
+                self.db.add_message(self.current_cn, self.my_nick, text, "pending", ts)
+                self.db.add_message(self.current_cn, "Sys", "Sesión perdida. Reconectando...", "error", ts)
+                self.w_input.text = ""
+                self.refresh_ui()
+                
+                # Intentar reconectar
+                if self.current_cn not in self.pending_handshakes:
+                    self.protocol.enviar_handshake(ip, port)
+                    self.pending_handshakes.add(self.current_cn)
+                return
+            
             msg_id = self.db.add_message(self.current_cn, self.my_nick, text, "sent", ts)
             self.w_input.text = ""
             
@@ -263,16 +282,29 @@ class ChatGUI:
                 # Si falla el envío, marcar como desconectado y cambiar estado a pending
                 self.db.mark_message_status(self.current_cn, msg_id, "pending")
                 self.db.set_contact_connected(self.current_cn, False)
+                self.protocol.cerrar_sesion(ip, port)  # Limpiar sesión
                 self.db.add_message(self.current_cn, "Sys", "Fallo de envío. Mensaje en cola.", "error", ts)
                 self.refresh_ui()  # Actualizar para mostrar 🔴
                 
                 # Intentar reconectar
-                self.protocol.enviar_handshake(ip, port)
-                self.pending_handshakes.add(self.current_cn)
+                if self.current_cn not in self.pending_handshakes:
+                    self.protocol.enviar_handshake(ip, port)
+                    self.pending_handshakes.add(self.current_cn)
                 
             self.refresh_ui()
         # Si no hay texto y ya está conectado, no hacer nada (ya conectado)
 
+    def force_disconnect(self):
+        """Forzar desconexión del contacto actual (para pruebas)"""
+        if not self.current_cn: return
+        info = self.db.get_contact_info(self.current_cn)
+        if info and info.get("ip"):
+            self.protocol.cerrar_sesion(info["ip"], info["port"])
+            self.db.set_contact_connected(self.current_cn, False)
+            ts = datetime.now().strftime("%H:%M")
+            self.db.add_message(self.current_cn, "Sys", "Desconectado manualmente", "system", ts)
+            self.refresh_ui()
+    
     def refresh_ui(self):
         lines = []
         for k in self.contact_keys:
