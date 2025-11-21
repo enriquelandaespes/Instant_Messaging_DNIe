@@ -138,18 +138,18 @@ class ChatGUI:
         self.refresh_ui()
 
     def add_or_update_peer(self, discovered_name, ip, port):
-        cn_to_manage = discovered_name 
-
-        found_cn_in_db = None
-        for cn_key, data in self.db.get_all_contacts().items():
-            if data.get("ip") == ip and data.get("port") == port:
-                found_cn_in_db = cn_key
-                break
+        """Llamado cuando Zeroconf descubre un peer."""
+        # CORRECCIÓN: Buscar si ya existe un contacto con esta IP:puerto
+        existing_cn = self.db.find_contact_by_address(ip, port)
         
-        if found_cn_in_db:
-            cn_to_manage = found_cn_in_db 
-        
-        self.db.add_or_update_contact(cn_to_manage, ip=ip, port=port, update_seen=True)
+        if existing_cn:
+            # Ya existe un contacto con esta dirección, actualizar su info
+            cn_to_manage = existing_cn
+            self.db.add_or_update_contact(cn_to_manage, ip=ip, port=port, update_seen=True)
+        else:
+            # Nuevo contacto descubierto
+            cn_to_manage = discovered_name
+            self.db.add_or_update_contact(cn_to_manage, ip=ip, port=port, update_seen=True)
         
         if cn_to_manage not in self.contact_keys:
             self.contact_keys.append(cn_to_manage)
@@ -160,7 +160,29 @@ class ChatGUI:
 
         self.refresh_ui()
 
-    async def on_protocol_msg(self, addr, text, real_cn_from_cert):
+    async def on_protocol_msg(self, addr, text, real_cn_from_cert, old_cn=None):
+        """Callback llamado por el protocolo cuando recibe mensajes o eventos."""
+        # CORRECCIÓN: Manejar consolidación de contactos
+        if text == "CONTACT_CONSOLIDATED" and old_cn:
+            # Un contacto fue consolidado (nombre antiguo → nombre real del certificado)
+            print(f"🔄 GUI: Consolidando '{old_cn}' → '{real_cn_from_cert}'")
+            
+            # Eliminar el nombre antiguo de la lista de contactos
+            if old_cn in self.contact_keys:
+                self.contact_keys.remove(old_cn)
+            
+            # Asegurar que el nombre nuevo está en la lista
+            if real_cn_from_cert not in self.contact_keys:
+                self.contact_keys.append(real_cn_from_cert)
+                self.contact_keys.sort()
+            
+            # Si estabas viendo el contacto antiguo, cambiar al nuevo
+            if self.current_cn == old_cn:
+                self.current_cn = real_cn_from_cert
+            
+            self.refresh_ui()
+            return
+        
         # Asegurar que el contacto existe en la DB con el CN real
         self.db.add_or_update_contact(real_cn_from_cert, ip=addr[0], port=addr[1], update_seen=True)
         
@@ -173,7 +195,7 @@ class ChatGUI:
         if text == "HANDSHAKE_OK":
             self.db.set_contact_connected(real_cn_from_cert, True)
             
-            # --- CORRECCIÓN: Evitar mensajes duplicados de conexión ---
+            # CORRECCIÓN: Evitar mensajes duplicados de conexión
             history = self.db.get_history(real_cn_from_cert)
             # Comprobamos si el último mensaje ya es el de conexión establecida
             if not history or history[-1].get('text') != "CONEXIÓN SEGURA ESTABLECIDA":
@@ -210,8 +232,9 @@ class ChatGUI:
         sent_indices = []
         for i, msg in pending:
             await asyncio.sleep(0.05) 
-            self.protocol.enviar_mensaje(ip, port, msg["text"])
-            sent_indices.append(i)
+            success = self.protocol.enviar_mensaje(ip, port, msg["text"])
+            if success:
+                sent_indices.append(i)
         
         if sent_indices:
             self.db.mark_message_status(cn, sent_indices, "sent")
@@ -243,11 +266,17 @@ class ChatGUI:
             return
 
         # CASO 2: Tenemos IP pero NO conexión segura -> Iniciar Handshake
-        if not is_connected and self.protocol.handshake_status.get(self.current_cn) not in ["INITIATED", "RESPONSED"]:
+        # CORRECCIÓN: Verificar si hay handshake en progreso usando handshake_in_progress (set de direcciones)
+        addr = (ip, port)
+        if not is_connected and addr not in self.protocol.handshake_in_progress:
             self.protocol.enviar_handshake(ip, port)
             
             if text:
                 self.db.add_message(self.current_cn, self.my_nick, text, "pending", timestamp)
+                # Evitar mensajes duplicados de "Conexión en progreso"
+                history = self.db.get_history(self.current_cn)
+                if not history or history[-1].get('text') != "Mensaje en cola. Conexión en progreso...":
+                    self.db.add_message(self.current_cn, "Sys", "Mensaje en cola. Conexión en progreso...", "system", timestamp)
             
             self.w_input.text = ""
             self.refresh_ui()
@@ -256,11 +285,17 @@ class ChatGUI:
         # CASO 3: Hay handshake en progreso o ya estamos conectados
         if text:
             if is_connected: 
-                self.protocol.enviar_mensaje(ip, port, text)
-                self.db.add_message(self.current_cn, self.my_nick, text, "sent", timestamp)
+                success = self.protocol.enviar_mensaje(ip, port, text)
+                if success:
+                    self.db.add_message(self.current_cn, self.my_nick, text, "sent", timestamp)
+                else:
+                    self.db.add_message(self.current_cn, self.my_nick, text, "pending", timestamp)
             else: 
                 self.db.add_message(self.current_cn, self.my_nick, text, "pending", timestamp)
-                self.db.add_message(self.current_cn, "Sys", "Mensaje en cola. Conexión en progreso...", "system", timestamp)
+                # Evitar mensajes duplicados
+                history = self.db.get_history(self.current_cn)
+                if not history or history[-1].get('text') != "Mensaje en cola. Conexión en progreso...":
+                    self.db.add_message(self.current_cn, "Sys", "Mensaje en cola. Conexión en progreso...", "system", timestamp)
             
             self.w_input.text = ""
             self.refresh_ui()
@@ -279,7 +314,7 @@ class ChatGUI:
             elif contact_info.get("ip") and contact_info.get("port"): 
                 icon = "🟡" 
 
-            prefix = "➤ " if cn_key == self.current_cn else "  "
+            prefix = "➜ " if cn_key == self.current_cn else "  "
             lines.append(f"{prefix}{icon} {cn_key}")
         
         self.w_contacts.text = "\n".join(lines)
