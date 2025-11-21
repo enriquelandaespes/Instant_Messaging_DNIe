@@ -116,13 +116,13 @@ class ChatGUI:
                 formatted_lines.append(("", "\n"))
                 formatted_lines.append(("", padding))
                 formatted_lines.append(("ansicyan bold", f"{line_content}"))
-            elif status == "system": # Mensajes del sistema
+            elif status == "system": 
                 formatted_lines.append(("", "\n"))
                 formatted_lines.append(("ansigray", f"--- {text} ---".center(PAD_WIDTH)))
-            elif status == "error": # Mensajes de error del sistema
+            elif status == "error": 
                 formatted_lines.append(("", "\n"))
                 formatted_lines.append(("ansired", f"--- {text} ---".center(PAD_WIDTH)))
-            else: # Mensajes de otros
+            else: 
                 formatted_lines.append(("", "\n"))
                 formatted_lines.append(("ansiyellow", f"[{time}] {sender}: {text}"))
                 
@@ -140,7 +140,6 @@ class ChatGUI:
     def add_or_update_peer(self, discovered_name, ip, port):
         cn_to_manage = discovered_name 
 
-        # Si ya existe un CN con esta IP/Puerto en la DB, lo usamos
         found_cn_in_db = None
         for cn_key, data in self.db.get_all_contacts().items():
             if data.get("ip") == ip and data.get("port") == port:
@@ -148,9 +147,8 @@ class ChatGUI:
                 break
         
         if found_cn_in_db:
-            cn_to_manage = found_cn_in_db # Usar el CN real si ya lo conocíamos
+            cn_to_manage = found_cn_in_db 
         
-        # Actualiza la DB. No cambia is_connected.
         self.db.add_or_update_contact(cn_to_manage, ip=ip, port=port, update_seen=True)
         
         if cn_to_manage not in self.contact_keys:
@@ -174,13 +172,11 @@ class ChatGUI:
 
         if text == "HANDSHAKE_OK":
             self.db.set_contact_connected(real_cn_from_cert, True)
-            # Solo añadir el mensaje de "CONEXIÓN ESTABLECIDA" una vez
             if not any(m.get('text') == "CONEXIÓN SEGURA ESTABLECIDA" and m.get('sender') == "Sys" for m in self.db.get_history(real_cn_from_cert)):
                  self.db.add_message(real_cn_from_cert, "Sys", "CONEXIÓN SEGURA ESTABLECIDA", "system", timestamp)
-            await self.check_pending_messages(real_cn_from_cert, addr[0], addr[1]) # Enviar pendientes
+            await self.check_pending_messages(real_cn_from_cert, addr[0], addr[1]) 
 
         elif text == "HANDSHAKE_START":
-            # Si el handshake fue iniciado por nosotros o por el otro, se registra en el chat
             if not any(m.get('text') == "Iniciando conexión segura..." and m.get('sender') == "Sys" for m in self.db.get_history(real_cn_from_cert)):
                 self.db.add_message(real_cn_from_cert, "Sys", "Iniciando conexión segura...", "system", timestamp)
 
@@ -194,7 +190,13 @@ class ChatGUI:
 
         else: # Mensaje normal recibido
             self.db.add_message(real_cn_from_cert, real_cn_from_cert, text, "received", timestamp)
-            self.db.set_contact_connected(real_cn_from_cert, True) # Confirmar que la conexión está activa
+            self.db.set_contact_connected(real_cn_from_cert, True) 
+
+        if self.current_cn is None:
+            # Si no hay contacto seleccionado, seleccionar el que acaba de hablar
+            self.current_cn = real_cn_from_cert
+        
+        # --- LÍNEA ERRÓNEA BORRADA AQUÍ ---
 
         self.refresh_ui()
 
@@ -204,7 +206,7 @@ class ChatGUI:
         
         sent_indices = []
         for i, msg in pending:
-            await asyncio.sleep(0.05) # Pequeño retraso para evitar sobrecargar
+            await asyncio.sleep(0.05) 
             self.protocol.enviar_mensaje(ip, port, msg["text"])
             sent_indices.append(i)
         
@@ -223,7 +225,7 @@ class ChatGUI:
             return
 
         ip = contact_info.get("ip")
-        port = contact_info.get("port") # <--- CORREGIDO: Asegurarse de usar .get()
+        port = contact_info.get("port") 
         is_connected = contact_info.get("is_connected")
         
         timestamp = datetime.now().strftime("%H:%M")
@@ -237,8 +239,7 @@ class ChatGUI:
             self.refresh_ui()
             return
 
-        # CASO 2: Tenemos IP pero NO conexión segura (ni handshake en curso) -> Iniciar Handshake
-        # Solo iniciar si no está conectado y si el protocolo no tiene un handshake ya iniciado/en respuesta
+        # CASO 2: Tenemos IP pero NO conexión segura -> Iniciar Handshake
         if not is_connected and self.protocol.handshake_status.get(self.current_cn) not in ["INITIATED", "RESPONSED"]:
             self.protocol.enviar_handshake(ip, port)
             
@@ -249,12 +250,12 @@ class ChatGUI:
             self.refresh_ui()
             return
         
-        # CASO 3: Hay handshake en progreso o ya estamos conectados -> Enviar mensaje o poner en cola
+        # CASO 3: Hay handshake en progreso o ya estamos conectados
         if text:
-            if is_connected: # Si ya hay conexión segura, enviar directamente
+            if is_connected: 
                 self.protocol.enviar_mensaje(ip, port, text)
                 self.db.add_message(self.current_cn, self.my_nick, text, "sent", timestamp)
-            else: # Si hay handshake en curso (o falló y estamos esperando), poner en cola
+            else: 
                 self.db.add_message(self.current_cn, self.my_nick, text, "pending", timestamp)
                 self.db.add_message(self.current_cn, "Sys", "Mensaje en cola. Conexión en progreso...", "system", timestamp)
             
