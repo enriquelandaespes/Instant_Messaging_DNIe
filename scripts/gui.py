@@ -1,12 +1,13 @@
 # gui.py
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from prompt_toolkit.application import Application
 from prompt_toolkit.layout import Layout, HSplit, VSplit, Window
 from prompt_toolkit.widgets import TextArea, Frame
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.data_structures import Point
+from prompt_toolkit.layout import ScrollablePane
 
 class ChatGUI:
     def __init__(self, protocol, my_nick, db):
@@ -18,6 +19,7 @@ class ChatGUI:
         self.current_cn = None 
         self.pending_handshakes = set()
         self._last_cursor_y = 0
+        self._auto_scroll = True  # Flag para scroll automático
         self._timeout_check_task = None  # Tarea para verificar timeouts 
 
         # --- Widgets ---
@@ -60,11 +62,53 @@ class ChatGUI:
         @kb.add("c-d")
         def _(event): self.force_disconnect()  # Ctrl+D para forzar desconexión (debug)
 
-        self.app = Application(layout=self.layout, key_bindings=kb, full_screen=True, mouse_support=True)
+        # Estilos personalizados para texto
+        from prompt_toolkit.styles import Style
+        custom_style = Style.from_dict({
+            'date-separator': 'fg:ansigray italic',  # Fecha separadora más discreta
+            'time-small': 'fg:ansigray',  # Hora pequeña y gris para mensajes recibidos
+            'time-small-sent': 'fg:#666666',  # Hora pequeña y gris oscuro para mensajes enviados
+        })
+        
+        self.app = Application(
+            layout=self.layout, 
+            key_bindings=kb, 
+            full_screen=True, 
+            mouse_support=True,
+            style=custom_style
+        )
         self._load_initial_contacts()
 
     def _get_chat_cursor_position(self):
         return Point(x=0, y=self._last_cursor_y)
+    
+    def _format_timestamp(self, time_str, full_date_str=None):
+        """Convierte timestamp a formato legible: 'Hoy 17:59', 'Ayer 18:30', '21 Nov 10:15'"""
+        try:
+            if full_date_str:
+                # Si tenemos fecha completa (formato: 'YYYY-MM-DD HH:MM')
+                msg_datetime = datetime.strptime(full_date_str, "%Y-%m-%d %H:%M")
+            else:
+                # Solo tenemos hora, asumir hoy
+                msg_datetime = datetime.strptime(f"{datetime.now().strftime('%Y-%m-%d')} {time_str}", "%Y-%m-%d %H:%M")
+            
+            now = datetime.now()
+            today = now.date()
+            msg_date = msg_datetime.date()
+            
+            if msg_date == today:
+                return f"Hoy {time_str}"
+            elif msg_date == today - timedelta(days=1):
+                return f"Ayer {time_str}"
+            elif msg_date.year == today.year:
+                # Mismo año: solo día y mes
+                return msg_datetime.strftime(f"%d %b {time_str}")
+            else:
+                # Año diferente: fecha completa
+                return msg_datetime.strftime(f"%d/%m/%y {time_str}")
+        except:
+            # Si falla el parsing, devolver el original
+            return time_str
 
     def _load_initial_contacts(self):
         for cn in self.db.get_all_contacts().keys():
@@ -113,9 +157,27 @@ class ChatGUI:
         formatted_lines = []
         PAD_WIDTH = 80 
         line_count = 0
+        last_date = None
 
         for m in msgs:
             sender, text, time, status = m.get('sender'), m.get('text'), m.get('time'), m.get('status', '')
+            full_date = m.get('full_date')  # Fecha completa si existe
+            
+            # Añadir separador de fecha si cambió el día
+            formatted_time = self._format_timestamp(time, full_date)
+            current_date = formatted_time.split()[0] if ' ' in formatted_time else None  # "Hoy", "Ayer", "21 Nov", etc.
+            
+            if current_date and last_date != current_date and current_date != time:  # Solo si no falló el parse
+                if last_date is not None:  # No mostrar en el primer mensaje
+                    formatted_lines.append(("", "\n"))
+                    line_count += 1
+                # Fecha más pequeña y discreta
+                separator = f"- {current_date} -"
+                center_pad = " " * max(0, (PAD_WIDTH - len(separator)) // 2)
+                formatted_lines.append(("class:date-separator", f"\n{center_pad}{separator}\n"))
+                line_count += 2
+                last_date = current_date
+            
             formatted_lines.append(("", "\n"))
             line_count += 1
             
@@ -126,7 +188,9 @@ class ChatGUI:
             
             # Mensajes RECIBIDOS (del otro usuario) - SIN TICK, a la izquierda
             elif status == 'received' or sender != self.my_nick:
-                formatted_lines.append(("ansiyellow", f"[{time}] {sender}:\n")) 
+                # Hora más pequeña y discreta
+                formatted_lines.append(("class:time-small", f"[{formatted_time}] "))
+                formatted_lines.append(("ansiyellow", f"{sender}:\n")) 
                 line_count += 1 
                 formatted_lines.append(("ansiyellow", f" > {text}"))
             
@@ -136,12 +200,19 @@ class ChatGUI:
                 elif status == 'sent': tick = "✓"
                 elif status == 'pending': tick = "🕒"
                 else: tick = "✓"  # Por defecto un tick
-                line_content = f"{text}   {time} {tick}"
-                padding = " " * max(0, PAD_WIDTH - len(line_content))
+                
+                # Separar texto de hora para usar estilos diferentes
+                time_and_tick = f"{formatted_time} {tick}"
+                padding = " " * max(0, PAD_WIDTH - len(text) - len(time_and_tick) - 3)
+                
                 formatted_lines.append(("", padding))
-                formatted_lines.append(("ansicyan bold", line_content)) 
+                formatted_lines.append(("ansicyan bold", text))
+                formatted_lines.append(("", "   "))
+                formatted_lines.append(("class:time-small-sent", time_and_tick))
         
+        # Establecer cursor al final para scroll automático
         self._last_cursor_y = line_count
+        
         return formatted_lines
 
     def move_selection(self, delta):

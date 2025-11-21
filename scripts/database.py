@@ -100,8 +100,9 @@ class JsonDatabase:
         if cn not in self.data["contacts"]:
             self.add_or_update_contact(cn)
         
+        now = datetime.now()
         if not timestamp:
-            timestamp = datetime.now().strftime("%H:%M")
+            timestamp = now.strftime("%H:%M")
             
         msg_id = str(uuid.uuid4()) # ID único para gestionar los Ticks
         msg = {
@@ -110,7 +111,8 @@ class JsonDatabase:
             "text": text,
             "status": status,
             "time": timestamp,
-            "sent_timestamp": datetime.now().timestamp() if status == "sent" else None,
+            "full_date": now.strftime("%Y-%m-%d %H:%M"),  # Fecha completa para comparaciones
+            "sent_timestamp": now.timestamp() if status == "sent" else None,
             "read": False  # Inicializar como no leído
         }
         self.data["contacts"][cn]["msgs"].append(msg)
