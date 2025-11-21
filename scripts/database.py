@@ -101,7 +101,8 @@ class JsonDatabase:
             "sender": sender,
             "text": text,
             "status": status,
-            "time": timestamp
+            "time": timestamp,
+            "sent_timestamp": datetime.now().timestamp() if status == "sent" else None
         }
         self.data["contacts"][cn]["msgs"].append(msg)
         self.save()
@@ -119,6 +120,29 @@ class JsonDatabase:
     def get_pending_messages(self, cn):
         """Devuelve mensajes que no se pudieron enviar."""
         return [(i, m) for i, m in enumerate(self.get_history(cn)) if m["status"] == "pending"]
+    
+    def check_message_timeouts(self, cn, timeout_seconds=5):
+        """Verifica si hay mensajes 'sent' que no recibieron ACK en el tiempo límite.
+        Retorna True si hay timeouts (indica desconexión)."""
+        if cn not in self.data["contacts"]: 
+            return False
+        
+        now = datetime.now().timestamp()
+        has_timeout = False
+        
+        for msg in self.data["contacts"][cn]["msgs"]:
+            if msg.get("status") == "sent" and msg.get("sent_timestamp"):
+                elapsed = now - msg["sent_timestamp"]
+                if elapsed > timeout_seconds:
+                    # Timeout detectado - marcar como pending
+                    msg["status"] = "pending"
+                    msg["sent_timestamp"] = None
+                    has_timeout = True
+        
+        if has_timeout:
+            self.save()
+        
+        return has_timeout
 
     # Métodos de compatibilidad (por si acaso)
     def load_history(self): return self.data["contacts"]

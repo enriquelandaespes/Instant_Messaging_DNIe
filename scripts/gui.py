@@ -17,7 +17,8 @@ class ChatGUI:
         self.contact_keys = [] 
         self.current_cn = None 
         self.pending_handshakes = set()
-        self._last_cursor_y = 0 
+        self._last_cursor_y = 0
+        self._timeout_check_task = None  # Tarea para verificar timeouts 
 
         # --- Widgets ---
         self.w_contacts = TextArea(focusable=False, width=35)
@@ -316,5 +317,44 @@ class ChatGUI:
         self.w_contacts.text = "\n".join(lines)
         self.app.invalidate()
 
+    async def _check_ack_timeouts(self):
+        """Verifica periódicamente si hay mensajes sin ACK que indiquen desconexión"""
+        while True:
+            await asyncio.sleep(2)  # Verificar cada 2 segundos
+            
+            # Revisar todos los contactos conectados
+            for cn in list(self.contact_keys):
+                info = self.db.get_contact_info(cn)
+                if info and info.get("is_connected"):
+                    # Verificar si hay timeouts (mensajes sin ACK)
+                    has_timeout = self.db.check_message_timeouts(cn, timeout_seconds=5)
+                    
+                    if has_timeout:
+                        # El contacto no responde - marcar como desconectado
+                        self.db.set_contact_connected(cn, False)
+                        
+                        # Cerrar sesión en el protocolo
+                        if info.get("ip") and info.get("port"):
+                            self.protocol.cerrar_sesion(info["ip"], info["port"])
+                        
+                        # Agregar mensaje informativo
+                        ts = datetime.now().strftime("%H:%M")
+                        self.db.add_message(cn, "Sys", "Conexión perdida (sin respuesta). Mensajes en cola.", "error", ts)
+                        
+                        # Actualizar UI
+                        self.refresh_ui()
+    
     async def run(self):
-        await self.app.run_async()
+        # Iniciar tarea de verificación de timeouts
+        self._timeout_check_task = asyncio.create_task(self._check_ack_timeouts())
+        
+        try:
+            await self.app.run_async()
+        finally:
+            # Cancelar tarea al salir
+            if self._timeout_check_task:
+                self._timeout_check_task.cancel()
+                try:
+                    await self._timeout_check_task
+                except asyncio.CancelledError:
+                    pass
