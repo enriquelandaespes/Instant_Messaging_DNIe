@@ -2,137 +2,96 @@
 import asyncio
 import sys
 import os
-import signal
-from getpass import getpass 
-import pkcs11.exceptions 
+import config
+from getpass import getpass
 
-from prompt_toolkit.patch_stdout import patch_stdout
+# Importaciones para sacar el nombre del certificado
+from cryptography import x509
+from cryptography.hazmat.backends import default_backend
+from cryptography.x509.oid import NameOID
 
 from dnie_manager import DNIeManager
-from discovery import DiscoveryService
 from protocol import SecureIMProtocol
-from gui import ChatGUI 
-from database import JsonEncryptedDB 
-
-DEFAULT_PORT = 6666
+from discovery import DiscoveryService
+from gui import ChatGUI
 
 async def main():
-    port = DEFAULT_PORT
+    # 1. Configuración Puerto
+    port = config.UDP_PORT
     if len(sys.argv) > 1 and sys.argv[1].isdigit():
         port = int(sys.argv[1])
-
-    print(f"--- DNIe CHAT (Puerto {port}) ---")
-
-    dnie_manager = None
-    db = None
-    my_nick = "Desconocido"
     
+    print(f"--- DNIe CHAT (Puerto {port}) ---")
+    
+    # 2. Login DNIe y Extracción de Identidad
     try:
-        # 1. Pedir PIN de forma oculta
-        pin = getpass("Introduce el PIN de tu DNIe: ").strip() 
+        pin = getpass("Introduce PIN DNIe: ")
+        print("⌛ Leyendo tarjeta...")
+        dnie = DNIeManager(pin)
         
-        if not pin:
-            print("PIN no puede estar vacío. Saliendo.")
-            return
+        # --- LÓGICA RECUPERADA: EXTRAER NOMBRE DEL DNIe ---
+        # No pedimos nickname, lo sacamos del certificado directamente
+        cert = x509.load_der_x509_certificate(dnie.cert_der, default_backend())
+        cn_attrs = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+        if cn_attrs:
+            raw_name = cn_attrs[0].value
+            # Limpiamos la basura que mete el DNIe
+            my_nick = raw_name.replace("(Autenticación)", "").replace("(Firma)", "").strip()
+        else:
+            my_nick = "DNIe Desconocido"
+            
+        print(f"✅ Identidad cargada: {my_nick}")
+        # --------------------------------------------------
 
-        print("⌛ Cargando DNIe...")
-        dnie_manager = DNIeManager(pin) 
-
-        # 2. Obtener Nick y ID único
-        my_nick = dnie_manager.get_user_name()
-        db_id = dnie_manager.get_unique_id() 
-        
-        print(f"✅ Usuario DNIe: {my_nick}")
-        print(f"🔑 ID Base de Datos: {db_id[:8]}...")
-
-        # 3. Inicializar Base de Datos Cifrada
-        db = JsonEncryptedDB(dnie_manager, db_id)
-
-    except pkcs11.exceptions.PinIncorrect:
-        print("\n❌ Error: El PIN introducido es incorrecto.")
-        return
-    except pkcs11.exceptions.TokenNotPresent:
-        print("\n❌ Error: No se detecta el DNIe. Insértalo correctamente.")
-        return
     except Exception as e:
-        print(f"\n❌ Error Crítico al iniciar: {e}")
-        return
+        print(f"❌ Error DNIe: {e}")
+        # Si falla el DNIe, salimos o usamos un dummy para probar
+        # return 
+        my_nick = "Usuario Sin DNIe" # Fallback por si estás probando sin tarjeta
 
-    # --- Inicio del sistema ---
+    # DB Dummy (Si no la usas, pasamos None)
+    db = None 
+
+    # 3. Iniciar Sistema
     loop = asyncio.get_running_loop()
     
-    # Definir callbacks (usando create_task para la GUI async)
-    def protocol_cb(addr, text, nombre):
-        asyncio.create_task(gui.on_protocol_msg(addr, text, nombre))
+    # Callback para recibir mensajes
+    def protocol_callback(addr, text, nombre):
+        gui.on_protocol_msg(addr, text, nombre)
 
-    def discovery_cb(name, ip, p):
-        gui.add_or_update_peer(name, ip, p)
-
-    # Inicializar componentes
-    # Se pasan dnie_manager, db y el callback al protocolo
-    protocol_instance = SecureIMProtocol(dnie_manager, db, protocol_cb)
-    gui = ChatGUI(protocol=protocol_instance, my_nick=my_nick, db=db)
+    # Protocolo
+    protocol = SecureIMProtocol(dnie, db, protocol_callback)
     
-    # Discovery
-    discovery_service = DiscoveryService(port, my_nick, discovery_cb)
-    await discovery_service.start()
-
-    # Servidor UDP
+    # GUI (Usamos el nombre del DNIe como nick)
+    gui = ChatGUI(protocol, my_nick, db)
+    
+    # Red UDP
     transport, _ = await loop.create_datagram_endpoint(
-        lambda: protocol_instance, 
-        local_addr=('0.0.0.0', port)
+        lambda: protocol, local_addr=('0.0.0.0', port)
     )
+    protocol.transport = transport 
     
-    # Arrancar GUI con manejo de cierre limpio
-    with patch_stdout():
-        stop_event = asyncio.Event()
+    # Discovery (mDNS)
+    def discovery_callback(name, ip, p):
+        gui.add_peer(name, ip, p)
+        
+    mdns = DiscoveryService(port, my_nick, discovery_callback)
+    await mdns.start()
 
-        if os.name != 'nt': 
-            loop.add_signal_handler(signal.SIGINT, stop_event.set)
-            loop.add_signal_handler(signal.SIGTERM, stop_event.set)
-
-        try:
-            tasks = [
-                asyncio.create_task(gui.run()),
-                asyncio.create_task(stop_event.wait())
-            ]
-            # Esperar a que la GUI termine o se pulse Ctrl+C
-            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-
-            # Cancelar tareas pendientes
-            for task in pending:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-
-        except KeyboardInterrupt:
-            pass # Captura Ctrl+C directo si no funcionaron las señales
-        except Exception as e:
-            print(f"Error en la aplicación principal: {e}")
-        finally:
-            print("\nCerrando servicios...")
-            await discovery_service.stop()
-            if transport:
-                transport.close()
-            
-            # Intentar cerrar la GUI limpiamente
-            try:
-                if gui.app.is_running:
-                    gui.app.exit()
-            except Exception:
-                pass
+    # 4. Correr todo
+    try:
+        await gui.run()
+    finally:
+        await mdns.stop()
 
 if __name__ == "__main__":
-    import sys
-    # --- FIX PARA WINDOWS ---
-    # Sin esto, la GUI no carga o da error de "Event loop closed"
+    # Fix para Windows (necesario para la GUI)
     if sys.platform == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    # ------------------------
-
+    
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
+    except Exception as e:
+        print(f"Error fatal: {e}")
