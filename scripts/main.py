@@ -125,13 +125,14 @@ async def main():
                 pass
 
 if __name__ == "__main__":
+    import sys
+    # --- FIX PARA WINDOWS ---
+    # Sin esto, la GUI no carga o da error de "Event loop closed"
     if sys.platform == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    
+    # ------------------------
+
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        # Captura final para evitar traceback al cerrar
-        pass
-    except Exception:
         pass
