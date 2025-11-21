@@ -3,26 +3,30 @@ import asyncio
 import struct
 import os
 import hashlib
+# Importaciones de criptografía
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.asymmetric import x25519
 from cryptography import x509
-from cryptography.x509.oid import NameOID  # <--- IMPORTANTE: Necesario para leer el nombre bien
+from cryptography.x509.oid import NameOID
 from cryptography.hazmat.backends import default_backend
 import config
 
-PKT_HANDSHAKE_INIT = 0x01  
-PKT_MSG            = 0x02  
-PKT_HANDSHAKE_RESP = 0x03  
+# Constantes de paquetes
+PKT_HANDSHAKE_INIT = 0x01
+PKT_MSG            = 0x02
+PKT_HANDSHAKE_RESP = 0x03
 
 class SecureIMProtocol(asyncio.DatagramProtocol):
-    def __init__(self, dnie_manager, db, on_msg_callback):
+    def __init__(self, dnie_manager, on_msg_callback):
         self.dnie = dnie_manager
-        self.db = db  # Añadido: Referencia a la base de datos
         self.transport = None
         self.callback = on_msg_callback
-        self.sessions = {} 
+        self.sessions = {}
         self.my_cid = os.urandom(4)
-        self.handshake_in_progress = set()  # Direcciones con handshake en curso
+        
+        # --- NUEVO: Diccionario para guardar estado del handshake ---
+        # Clave: "ip:port", Valor: "INITIATED", "RESPONSED", "ESTABLISHED"
+        self.handshake_status = {} 
 
     def connection_made(self, transport):
         self.transport = transport
@@ -30,7 +34,8 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
     def datagram_received(self, data, addr):
         if len(data) < 5: return
         msg_type = data[0]
-        payload = data[5:] 
+        # El payload empieza en el byte 5 (después del tipo + CID)
+        payload = data[5:]
 
         if msg_type == PKT_HANDSHAKE_INIT:
             asyncio.create_task(self.handle_handshake(payload, addr, is_response=False))
@@ -40,163 +45,123 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             self.handle_message(payload, addr)
 
     async def handle_handshake(self, payload, addr, is_response):
+        key = f"{addr[0]}:{addr[1]}"
         try:
             offset = 0
             # 1. Leer Clave Pública Efímera (32 bytes)
+            if len(payload) < 32: raise ValueError("Paquete muy corto para pubkey")
             peer_pub_bytes = payload[offset : offset+32]
             offset += 32
-            
-            # 2. Leer Longitud del Certificado (!H = unsigned short, 2 bytes)
+
+            # 2. Leer Longitud del Certificado (2 bytes)
+            if len(payload) < offset + 2: raise ValueError("Paquete muy corto para len cert")
             cert_len = struct.unpack("!H", payload[offset : offset+2])[0]
             offset += 2
-            
+
             # 3. Leer Bytes del Certificado
+            if len(payload) < offset + cert_len: raise ValueError("Paquete muy corto para cert")
             cert_bytes = payload[offset : offset+cert_len]
             offset += cert_len
-            
-            # 4. Leer la Firma (El resto del payload)
-            signature = payload[offset:]
 
-            # Cargar certificado y extraer CN
-            cert_obj = x509.load_der_x509_certificate(cert_bytes, default_backend())
-            cn_attributes = cert_obj.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
-            if cn_attributes:
-                nombre_completo = cn_attributes[0].value
-                # Limpiar sufijos del DNIe
-                nombre = nombre_completo.replace("(AUTENTICACIÓN)", "").replace("(FIRMA)", "").strip()
-            else:
-                nombre = "DNIe Desconocido"
-            
-            # CORRECCIÓN: Buscar si ya existe un contacto con esta dirección
-            existing_cn = self.db.find_contact_by_address(addr[0], addr[1])
-            
-            if existing_cn and existing_cn != nombre:
-                # Hay un contacto descubierto con un nombre diferente al del certificado
-                print(f"♻️ Consolidando contacto '{existing_cn}' → '{nombre}' ({addr[0]}:{addr[1]})")
-                
-                # Consolidar en la base de datos
-                self.db.consolidate_contact(existing_cn, nombre)
-                
-                # Si había una sesión activa con el nombre antiguo, actualizarla
-                old_addr = None
-                for session_addr, session_data in list(self.sessions.items()):
-                    if session_data.get('name') == existing_cn:
-                        old_addr = session_addr
-                        break
-                
-                # Notificar a la GUI sobre la consolidación
-                await self.callback(addr, "CONTACT_CONSOLIDATED", nombre, old_cn=existing_cn)
-            else:
-                # Actualizar o crear el contacto normalmente
-                self.db.add_or_update_contact(nombre, ip=addr[0], port=addr[1], update_seen=True)
-            
-            # Verificar si ya hay una sesión establecida
-            if addr in self.sessions and self.sessions[addr].get('state') == 'ESTABLISHED':
-                print(f"Ya conectado a {nombre} ({addr}). Ignorando handshake redundante.")
-                return
-            
-            # Verificar si ya hay un handshake en progreso
-            if addr in self.handshake_in_progress:
-                print(f"Handshake con {nombre} ({addr}) ya en progreso. Ignorando duplicado.")
-                return
-            
-            # Marcar handshake en progreso
-            self.handshake_in_progress.add(addr)
+            # 4. La firma está al final
+            _signature = payload[offset:]
 
-            # Crypto
+            # --- EXTRACCIÓN DEL NOMBRE ---
+            try:
+                cert_obj = x509.load_der_x509_certificate(cert_bytes, default_backend())
+                # Usamos OID para buscar el Common Name de forma segura
+                cn_attributes = cert_obj.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+                if cn_attributes:
+                    nombre = cn_attributes[0].value
+                else:
+                    nombre = "DNIe (Sin CN)"
+            except Exception as e_cert:
+                print(f"Error leyendo certificado: {e_cert}")
+                nombre = "DNIe Inválido"
+
+            # --- CRIPTOGRAFÍA ---
             peer_key_obj = x25519.X25519PublicKey.from_public_bytes(peer_pub_bytes)
             shared_secret = self.dnie.private_key.exchange(peer_key_obj)
             session_key = hashlib.blake2s(shared_secret, digest_size=32).digest()
-            
+
+            # Guardar sesión
             self.sessions[addr] = {
                 'cipher': ChaCha20Poly1305(session_key),
                 'name': nombre,
                 'state': 'ESTABLISHED'
             }
             
-            # Actualizar estado de conexión en la DB
-            self.db.set_contact_connected(nombre, True)
-            
+            # Actualizar estado del handshake
+            self.handshake_status[key] = "ESTABLISHED"
+
             # Notificar a la GUI
-            await self.callback(addr, "HANDSHAKE_OK", nombre) 
-            
+            if self.callback:
+                self.callback(addr, "HANDSHAKE_OK", nombre)
+
+            # Si somos nosotros el servidor (quien recibió el INIT), respondemos
             if not is_response:
-                # Si nosotros recibimos la solicitud, debemos responder
                 self._enviar_paquete_credenciales(addr[0], addr[1], tipo=PKT_HANDSHAKE_RESP)
-            
-            # Quitar de handshakes en progreso
-            self.handshake_in_progress.discard(addr)
+                # Marcamos como contestado
+                self.handshake_status[key] = "RESPONSED"
 
         except Exception as e:
-            print(f"❌ Error crítico en handshake con {addr}: {e}")
+            print(f"❌ Error en handshake con {addr}: {e}")
             import traceback
             traceback.print_exc()
-            # Quitar de handshakes en progreso en caso de error
-            self.handshake_in_progress.discard(addr)
+            # Limpiar estado si falla
+            if key in self.handshake_status:
+                del self.handshake_status[key]
 
     def handle_message(self, payload, addr):
-        if addr not in self.sessions: 
-            # No hay sesión establecida, intentar handshake
-            print(f"Mensaje recibido sin sesión de {addr}. Iniciando handshake...")
-            self.enviar_handshake(addr[0], addr[1])
-            return
-            
+        if addr not in self.sessions: return
         session = self.sessions[addr]
         cipher = session['cipher']
         nombre = session.get('name', '???')
         try:
+            if len(payload) < 12: return
             nonce = payload[:12]
             ciphertext = payload[12:]
             plaintext = cipher.decrypt(nonce, ciphertext, None)
-            
-            # Actualizar estado de conexión al recibir mensaje exitosamente
-            self.db.set_contact_connected(nombre, True)
-            
-            asyncio.create_task(self.callback(addr, plaintext.decode('utf-8'), nombre))
-        except Exception as e: 
-            print(f"Error descifrando mensaje de {nombre} ({addr}): {e}")
-            # Invalidar sesión si falla el descifrado
-            self.db.set_contact_connected(nombre, False)
-            del self.sessions[addr]
+            if self.callback:
+                self.callback(addr, plaintext.decode('utf-8'), nombre)
+        except Exception as e:
+            print(f"Error descifrando msg de {nombre}: {e}")
 
     def enviar_handshake(self, ip, port):
-        addr = (ip, port)
-        
-        # Verificar si ya hay handshake en progreso
-        if addr in self.handshake_in_progress:
-            print(f"Handshake con {ip}:{port} ya en progreso. No se inicia otro.")
-            return
-        
-        # Verificar si ya hay sesión establecida
-        if addr in self.sessions and self.sessions[addr].get('state') == 'ESTABLISHED':
-            nombre = self.sessions[addr].get('name', 'desconocido')
-            print(f"Ya conectado a {nombre} ({ip}:{port}). No se inicia handshake.")
-            return
-        
-        print(f"Iniciando handshake con {ip}:{port}...")
-        self.handshake_in_progress.add(addr)
+        # Actualizamos el estado antes de enviar para que la GUI lo sepa
+        key = f"{ip}:{port}"
+        self.handshake_status[key] = "INITIATED"
         self._enviar_paquete_credenciales(ip, port, tipo=PKT_HANDSHAKE_INIT)
 
     def _enviar_paquete_credenciales(self, ip, port, tipo):
-        cert, firma = self.dnie.obtener_credenciales()
-        cert_len = len(cert)
-        # Estructura: TIPO (1B) + CID (4B) + PUB_KEY (32B) + LEN_CERT (2B) + CERT (...) + FIRMA (...)
-        packet = (
-            struct.pack("B", tipo) + self.my_cid + self.dnie.public_bytes + 
-            struct.pack("!H", cert_len) + cert + firma
-        )
-        self.transport.sendto(packet, (ip, port))
+        if not self.transport: return
+        try:
+            cert, firma = self.dnie.obtener_credenciales()
+            cert_len = len(cert)
+            # Estructura: TIPO(1) + CID(4) + PUB(32) + LEN(2) + CERT + FIRMA
+            packet = (
+                struct.pack("B", tipo) + 
+                self.my_cid + 
+                self.dnie.public_bytes + 
+                struct.pack("!H", cert_len) + 
+                cert + 
+                firma
+            )
+            self.transport.sendto(packet, (ip, port))
+        except Exception as e:
+            print(f"Error enviando credenciales: {e}")
 
     def enviar_mensaje(self, ip, port, texto):
         addr = (ip, port)
         if addr not in self.sessions:
-            print(f"No hay sesión con {ip}:{port}. Iniciando handshake primero...")
-            self.enviar_handshake(ip, port)
-            return False
+            print(f"Intento de enviar mensaje a {addr} sin sesión.")
+            return
         
-        cipher = self.sessions[addr]['cipher']
-        nonce = os.urandom(12)
-        ciphertext = cipher.encrypt(nonce, texto.encode('utf-8'), None)
-        packet = struct.pack("B", PKT_MSG) + self.my_cid + nonce + ciphertext
-        self.transport.sendto(packet, addr)
-        return True
+        try:
+            cipher = self.sessions[addr]['cipher']
+            nonce = os.urandom(12)
+            ciphertext = cipher.encrypt(nonce, texto.encode('utf-8'), None)
+            packet = struct.pack("B", PKT_MSG) + self.my_cid + nonce + ciphertext
+            self.transport.sendto(packet, addr)
+        except Exception as e:
+            print(f"Error enviando mensaje: {e}")
