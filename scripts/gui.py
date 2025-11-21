@@ -1,5 +1,6 @@
 # gui.py
 import asyncio
+from datetime import datetime
 from prompt_toolkit.application import Application
 from prompt_toolkit.layout import Layout, HSplit, VSplit, Window
 from prompt_toolkit.widgets import TextArea, Frame
@@ -9,27 +10,26 @@ from prompt_toolkit.data_structures import Point
 
 class ChatGUI:
     def __init__(self, protocol, my_nick, db):
-        self.protocol = protocol
+        self.protocol = protocol 
         self.my_nick = my_nick
         self.db = db
         
-        self.contacts = {} 
         self.contact_keys = [] 
-        self.current_key = None 
-        self.selected_idx = 0
-        
-        # Cargar historial al inicio
-        self.cargar_historial_inicial()
+        self.current_cn = None 
+        self.pending_handshakes = set()
 
-        # --- WIDGETS ---
+        # --- Cache para evitar crasheos de índice ---
+        self._last_cursor_y = 0 
+
+        # --- Widgets ---
         self.w_contacts = TextArea(focusable=False, width=35)
         
-        # Control personalizado para colores y alineación
         self.chat_control = FormattedTextControl(
             text=self._get_chat_content,
-            get_cursor_position=lambda: Point(0, 10000), # Auto-scroll
+            get_cursor_position=self._get_chat_cursor_position,
             focusable=False 
         )
+        
         self.w_chat_window = Window(
             content=self.chat_control, 
             wrap_lines=True, 
@@ -37,179 +37,213 @@ class ChatGUI:
         )
         self.w_input = TextArea(height=3, prompt="> ", multiline=False)
 
-        # --- LAYOUT ---
-        self.layout = Layout(HSplit([
-            VSplit([
-                Frame(self.w_contacts, title="Vecinos (DNIe)"), 
-                Frame(self.w_chat_window, title=self._get_chat_title)
+        # --- Layout ---
+        self.layout = Layout(
+            HSplit([
+                VSplit([
+                    Frame(self.w_contacts, title="Vecinos (DNIe)"), 
+                    Frame(self.w_chat_window, title=self._get_chat_title)
+                ]),
+                Frame(self.w_input, title=f"Escribe aquí ({my_nick})")
             ]),
-            Frame(self.w_input, title=f"Escribe (Enter) | 'c' conectar - Soy: {my_nick}")
-        ]))
+            focused_element=self.w_input
+        )
 
-        # --- KEYBINDINGS ---
         kb = KeyBindings()
         @kb.add("c-c")
-        def _(e): e.app.exit()
+        def _(event): event.app.exit()
         @kb.add("up")
-        def _(e): self.move_selection(-1)
+        def _(event): self.move_selection(-1)
         @kb.add("down")
-        def _(e): self.move_selection(1)
+        def _(event): self.move_selection(1)
         @kb.add("enter")
-        def _(e): asyncio.create_task(self.handle_enter())
-        @kb.add("c")
-        def _(e): self.conectar_manual()
+        def _(event): asyncio.create_task(self.handle_enter())
 
         self.app = Application(layout=self.layout, key_bindings=kb, full_screen=True, mouse_support=True)
+        self._load_initial_contacts()
+
+    def _get_chat_cursor_position(self):
+        # CORRECCIÓN CRÍTICA: Usamos el valor calculado durante la generación del texto
+        # en lugar de recalcularlo, para evitar desincronización si llegan mensajes nuevos.
+        return Point(x=0, y=self._last_cursor_y)
+
+    def _load_initial_contacts(self):
+        for cn in self.db.get_all_contacts().keys():
+            if cn not in self.contact_keys: self.contact_keys.append(cn)
+        self.contact_keys.sort()
+        if self.contact_keys and self.current_cn is None:
+            self.current_cn = self.contact_keys[0]
+        self.refresh_ui()
 
     def _get_chat_title(self):
-        if not self.current_key: return "Chat Seguro"
-        c = self.contacts[self.current_key]
-        status = "ONLINE" if c["connected"] else "OFFLINE"
-        return f"Chat con {c['name']} [{status}]"
+        if not self.current_cn: return "Chat Seguro"
+        info = self.db.get_contact_info(self.current_cn)
+        status = "🔴 OFFLINE"
+        if info and info.get("is_connected"): status = "🟢 CONECTADO"
+        elif info and info.get("ip"): status = "🟡 DISPONIBLE"
+        if self.current_cn in self.pending_handshakes: status = "⏳ CONECTANDO..."
+        return f"Chat con {self.current_cn} [{status}]"
 
     def _get_chat_content(self):
-        if not self.current_key: return []
+        if not self.current_cn: 
+            self._last_cursor_y = 0
+            return [("class:info", "Esperando contactos...")]
         
-        c = self.contacts[self.current_key]
+        # Obtenemos copia para evitar modificaciones durante iteración
+        msgs = list(self.db.get_history(self.current_cn))
         formatted_lines = []
-        PAD_WIDTH = 80 # Ancho virtual para empujar texto a la derecha
+        PAD_WIDTH = 80 
         
-        for m in c["msgs"]:
-            sender = m["sender"]
-            text = m["text"]
-            status = m.get("status", "")
+        # Contador de líneas reales para el cursor
+        line_count = 0
+
+        for m in msgs:
+            sender, text, time, status = m.get('sender'), m.get('text'), m.get('time'), m.get('status', '')
             
-            formatted_lines.append(("", "\n")) # Salto de línea
+            # Salto de línea inicial
+            formatted_lines.append(("", "\n"))
+            line_count += 1
             
-            if sender == "yo":
-                # --- MENSAJES PROPIOS (DERECHA - CYAN) ---
-                # Lógica de Ticks
+            if sender == self.my_nick:
+                # PROPIOS (DERECHA)
                 if status == 'delivered': tick = "✓✓"
                 elif status == 'sent': tick = "✓"
                 else: tick = "🕒"
                 
-                line_content = f"{text}  {tick}"
-                # Padding para empujar a la derecha
+                line_content = f"{text}   {time} {tick}"
                 padding = " " * max(0, PAD_WIDTH - len(line_content))
                 
                 formatted_lines.append(("", padding))
                 formatted_lines.append(("ansicyan bold", line_content))
                 
-            elif sender == "sys":
-                # --- SISTEMA (CENTRO - GRIS) ---
+            elif sender == "Sys":
+                # SISTEMA (CENTRO)
                 center_pad = " " * max(0, (PAD_WIDTH - len(text)) // 2)
                 formatted_lines.append(("ansigray", f"{center_pad}--- {text} ---"))
                 
             else:
-                # --- RECIBIDOS (IZQUIERDA - AMARILLO) ---
-                formatted_lines.append(("ansiyellow", f"{sender}:\n"))
-                formatted_lines.append(("ansiyellow", f" > {text}"))
-                
+                # RECIBIDOS (IZQUIERDA)
+                formatted_lines.append(("ansiyellow", f"[{time}] {sender}:\n")) 
+                line_count += 1 # La cabecera del nombre ocupa una línea extra visual si hay \n
+                formatted_lines.append(("ansiyellow", f" > {text}")) 
+        
+        # Guardamos la posición segura del cursor (al final del texto generado)
+        self._last_cursor_y = line_count
         return formatted_lines
-
-    def cargar_historial_inicial(self):
-        hist = self.db.load_history()
-        for key, data in hist.items():
-            self.contacts[key] = {
-                "name": data.get("name", "Desconocido"),
-                "msgs": data.get("history", []), # Ya viene en formato correcto de DB
-                "connected": False,
-                "msg_queue": []
-            }
-        self.contact_keys = sorted(list(self.contacts.keys()))
-        if self.contact_keys: self.current_key = self.contact_keys[0]
 
     def move_selection(self, delta):
         if not self.contact_keys: return
-        idx = self.contact_keys.index(self.current_key) if self.current_key else 0
-        self.current_key = self.contact_keys[(idx + delta) % len(self.contact_keys)]
-        self.app.invalidate()
+        idx = self.contact_keys.index(self.current_cn) if self.current_cn in self.contact_keys else 0
+        new_idx = (idx + delta) % len(self.contact_keys)
+        self.current_cn = self.contact_keys[new_idx]
+        self.refresh_ui()
 
-    def add_peer(self, name, ip, port):
-        key = f"{ip}:{port}"
-        if key in self.contacts:
-            # Actualizar nombre si pasa de Nick mDNS a Nombre DNIe
-            if "DNIe" in self.contacts[key]["name"] and "DNIe" not in name:
-                 self.contacts[key]["name"] = name
-            return 
+    def add_or_update_peer(self, name, ip, port):
+        real_exists = False
+        for cn, data in self.db.get_all_contacts().items():
+            if data.get("ip") == ip:
+                real_exists = True
+                break
+        if not real_exists:
+            self.db.add_or_update_contact(name, ip=ip, port=port)
+            if name not in self.contact_keys:
+                self.contact_keys.append(name)
+                self.contact_keys.sort()
+            if not self.current_cn: self.current_cn = name
+        self.refresh_ui()
 
-        self.contacts[key] = {"name": name, "msgs": [], "connected": False, "msg_queue": []}
-        if not self.contact_keys: self.current_key = key
-        
-        self.contact_keys = sorted(list(self.contacts.keys()))
-        self.app.invalidate()
+    def on_protocol_msg(self, addr, text, real_cn):
+        if real_cn in self.pending_handshakes: self.pending_handshakes.remove(real_cn)
+        self.db.add_or_update_contact(real_cn, ip=addr[0], port=addr[1])
+        if real_cn not in self.contact_keys:
+            self.contact_keys.append(real_cn)
+            self.contact_keys.sort()
 
-    def conectar_manual(self):
-        if not self.current_key: return
-        ip, port = self.current_key.split(":")
-        self.add_msg_internal(self.current_key, "sys", "Iniciando Handshake manual...", "info")
-        self.protocol.enviar_handshake(ip, int(port))
-
-    def on_protocol_msg(self, addr, text, nombre):
-        key = f"{addr[0]}:{addr[1]}"
-        if key not in self.contacts: self.add_peer(nombre, addr[0], addr[1])
-        
-        c = self.contacts[key]
+        ts = datetime.now().strftime("%H:%M")
         
         if text == "HANDSHAKE_OK":
-            c["connected"] = True
-            c["name"] = nombre
-            self.add_msg_internal(key, "sys", f"CONEXIÓN OK: {nombre}", "info")
-            # Reenviar cola
-            for txt in c["msg_queue"]:
-                mid = self.db.save_message(c["name"], key, "yo", txt, "sent") # Guardar y obtener ID
-                self.protocol.enviar_mensaje(addr[0], addr[1], txt, mid)
-                self.add_msg_internal(key, "yo", txt, "sent", mid) # Actualizar UI
-            c["msg_queue"] = []
+            self.db.set_contact_connected(real_cn, True)
+            self.db.add_message(real_cn, "Sys", "CONEXIÓN SEGURA ESTABLECIDA", "system", ts)
+            self.check_pending_messages(real_cn, addr[0], addr[1])
+        elif text.startswith("HANDSHAKE_ERROR"):
+            self.db.set_contact_connected(real_cn, False)
+            self.db.add_message(real_cn, "Sys", f"ERROR: {text}", "error", ts)
+        elif text == "ERROR_DESCIFRADO":
+            self.db.add_message(real_cn, "Sys", "Error cifrado.", "error", ts)
         else:
-            c["connected"] = True
-            # Mensaje recibido
-            self.db.save_message(nombre, key, nombre, text, "received")
-            self.add_msg_internal(key, nombre, text, "received")
+            self.db.set_contact_connected(real_cn, True)
+            self.db.add_message(real_cn, real_cn, text, "received", ts)
+            
+        self.refresh_ui()
 
-    def on_ack_received(self, sender_cn, msg_id):
-        # Buscar mensaje por ID y actualizar a delivered
-        # Nota: Esto requiere buscar en todos los contactos si no tenemos la key directa
-        # Simplificación: Asumimos que sender_cn nos ayuda o refrescamos todo
-        self.db.mark_message_status_by_id(msg_id, "delivered")
-        
-        # Actualizar memoria local UI
-        for k, c in self.contacts.items():
-            for m in c["msgs"]:
-                if m.get("id") == msg_id: # Asumiendo que guardamos ID en memoria UI también
-                    m["status"] = "delivered"
-        
+    def on_ack_received(self, cn, msg_id):
+        self.db.mark_message_status(cn, msg_id, "delivered")
         self.app.invalidate()
 
+    def check_pending_messages(self, cn, ip, port):
+        pending = self.db.get_pending_messages(cn)
+        if not pending: return
+        ids = []
+        for i, msg in pending:
+            self.protocol.enviar_mensaje(ip, port, msg["text"], msg["id"])
+            ids.append(i)
+        if ids:
+            self.db.mark_message_status(cn, ids, "sent") 
+            self.refresh_ui()
+
     async def handle_enter(self):
-        if not self.current_key: return
+        if not self.current_cn: return
         text = self.w_input.text.strip()
-        self.w_input.text = ""
-        if not text: return
-
-        c = self.contacts[self.current_key]
-        ip, port = self.current_key.split(":")
-        port = int(port)
-
-        # Generar ID y guardar
-        msg_id = self.db.save_message(c["name"], self.current_key, "yo", text, "pending")
         
-        # Intentar enviar
-        if self.protocol.enviar_mensaje(ip, port, text, msg_id):
-            self.add_msg_internal(self.current_key, "yo", text, "sent", msg_id)
-            c["connected"] = True
-        else:
-            c["connected"] = False
-            c["msg_queue"].append(text)
-            self.add_msg_internal(self.current_key, "yo", text, "pending", msg_id)
-            # No mostramos error, simplemente encolamos
-            self.add_msg_internal(self.current_key, "sys", "En cola (Conectando...)", "info")
+        info = self.db.get_contact_info(self.current_cn)
+        if not info: return 
+        ip, port = info.get("ip"), info.get("port")
+        ts = datetime.now().strftime("%H:%M")
 
-    def add_msg_internal(self, key, sender, text, status, mid=None):
-        if key not in self.contacts: return
-        msg = {"sender": sender, "text": text, "status": status, "time": datetime.now().strftime("%H:%M")}
-        if mid: msg["id"] = mid
-        self.contacts[key]["msgs"].append(msg)
+        if not ip:
+            if text:
+                self.db.add_message(self.current_cn, "Sys", "Usuario Offline", "error", ts)
+            self.w_input.text = ""
+            self.refresh_ui()
+            return
+
+        if not info.get("is_connected"):
+            if self.current_cn in self.pending_handshakes: return 
+            self.protocol.enviar_handshake(ip, port)
+            self.pending_handshakes.add(self.current_cn)
+            
+            self.db.add_message(self.current_cn, "Sys", "Iniciando conexión segura...", "system", ts)
+            if text:
+                self.db.add_message(self.current_cn, self.my_nick, text, "pending", ts)
+            
+            self.w_input.text = ""
+            self.refresh_ui()
+            
+            await asyncio.sleep(10)
+            if self.current_cn in self.pending_handshakes:
+                self.pending_handshakes.remove(self.current_cn)
+                self.refresh_ui()
+            return
+
+        if text:
+            msg_id = self.db.add_message(self.current_cn, self.my_nick, text, "sent", ts)
+            if self.protocol.enviar_mensaje(ip, port, text, msg_id):
+                self.w_input.text = ""
+            else:
+                self.db.set_contact_connected(self.current_cn, False)
+                self.db.add_message(self.current_cn, "Sys", "Fallo de envío. Reconectando...", "error", ts)
+                self.protocol.enviar_handshake(ip, port)
+            self.refresh_ui()
+
+    def refresh_ui(self):
+        lines = []
+        for k in self.contact_keys:
+            info = self.db.get_contact_info(k)
+            if not info: continue
+            icon = "🟢" if info.get("is_connected") else ("🟡" if info.get("ip") else "🔴")
+            prefix = "➤ " if k == self.current_cn else "  "
+            lines.append(f"{prefix}{icon} {k}")
+        self.w_contacts.text = "\n".join(lines)
         self.app.invalidate()
 
     async def run(self):
