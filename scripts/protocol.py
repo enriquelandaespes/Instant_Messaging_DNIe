@@ -116,7 +116,8 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         except Exception:
             pass
 
-    def enviar_mensaje(self, ip, port, texto):
+    # --- CORRECCIÓN: AÑADIDO ARGUMENTO msg_id=None ---
+    def enviar_mensaje(self, ip, port, texto, msg_id=None):
         addr = (ip, port)
         # Comprobación real de conexión
         if addr not in self.sessions:
