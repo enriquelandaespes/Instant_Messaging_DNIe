@@ -1,10 +1,23 @@
 # discovery.py
 import socket
 import asyncio
-import uuid
 from zeroconf import ServiceInfo, ServiceStateChange
 from zeroconf.asyncio import AsyncZeroconf, AsyncServiceBrowser, AsyncServiceInfo
 import config
+
+def get_lan_ip():
+    """
+    Obtiene la IP real que sale a internet (WiFi/Ethernet).
+    """
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # Conectamos a una IP pública (no envía datos, solo consulta tabla de rutas)
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
 
 class DiscoveryService:
     def __init__(self, my_port, my_nick, on_peer_found_callback):
@@ -13,7 +26,7 @@ class DiscoveryService:
         self.on_peer = on_peer_found_callback
         self.azc = None
         self.browser = None
-        self.my_ip = self.get_lan_ip()
+        self.my_ip = get_lan_ip()
         
         # ID único para evitar choques de nombre en la red
         unique_id = str(uuid.uuid4())[:8]
@@ -47,16 +60,17 @@ class DiscoveryService:
             self.my_name,
             addresses=[socket.inet_aton(self.my_ip)],
             port=self.port,
-            properties={"nick": self.nick},
-            server=f"{socket.gethostname()}.local.",
+            properties={'version': '1.0', 'nick': self.nick},
         )
-        
+
+        # Anunciamos (Register)
         try:
             await self.azc.async_register_service(info)
             # print(f"📢 [mDNS] Anunciando: {self.my_name}")
         except Exception as e:
-            print(f"⚠️ [mDNS] Error registro: {e}")
+            print(f"--- [Discovery] Error al anunciar: {e} ---")
         
+        # Escuchamos (Browser)
         self.browser = AsyncServiceBrowser(
             self.azc.zeroconf, config.SERVICE_TYPE, handlers=[self._on_change]
         )
@@ -93,5 +107,7 @@ class DiscoveryService:
             pass
 
     async def stop(self):
-        if self.browser: await self.browser.async_cancel()
-        if self.azc: await self.azc.async_close()
+        if self.browser: 
+            await self.browser.async_cancel()
+        if self.azc: 
+            await self.azc.async_close()
