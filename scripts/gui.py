@@ -81,7 +81,28 @@ class ChatGUI:
         if info and info.get("is_connected"): status = "🟢 CONECTADO"
         elif info and info.get("ip"): status = "🟡 DISPONIBLE"
         if self.current_cn in self.pending_handshakes: status = "⏳ CONECTANDO..."
-        return f"Chat con {self.current_cn} [{status}]"
+        
+        # Mostrar nombre legible y acortado
+        full_name = info.get("name", self.current_cn) if info else self.current_cn
+        
+        # Acortar nombre: solo nombre y primer apellido
+        name_parts = full_name.split()
+        if len(name_parts) >= 2:
+            if "," in full_name:
+                parts = full_name.split(",")
+                apellidos = parts[0].strip().split()
+                nombre = parts[1].strip().split()[0] if len(parts) > 1 else ""
+                display_name = f"{nombre} {apellidos[0]}"
+            else:
+                display_name = f"{name_parts[0]} {name_parts[1]}"
+        else:
+            display_name = full_name
+        
+        if ":" in self.current_cn:
+            port = self.current_cn.split(":")[1]
+            display_name = f"{display_name} [:{port}]"
+        
+        return f"Chat con {display_name} [{status}]"
 
     def _get_chat_content(self):
         if not self.current_cn: 
@@ -98,23 +119,27 @@ class ChatGUI:
             formatted_lines.append(("", "\n"))
             line_count += 1
             
-            if sender == self.my_nick:
+            # Mensajes del sistema
+            if sender == "Sys":
+                center_pad = " " * max(0, (PAD_WIDTH - len(text)) // 2)
+                formatted_lines.append(("ansigray", f"{center_pad}--- {text} ---"))
+            
+            # Mensajes RECIBIDOS (del otro usuario) - SIN TICK, a la izquierda
+            elif status == 'received' or sender != self.my_nick:
+                formatted_lines.append(("ansiyellow", f"[{time}] {sender}:\n")) 
+                line_count += 1 
+                formatted_lines.append(("ansiyellow", f" > {text}"))
+            
+            # Mensajes ENVIADOS por mí - CON TICK, a la derecha
+            else:
                 if status == 'delivered': tick = "✓✓"
                 elif status == 'sent': tick = "✓"
-                else: tick = "🕒"
+                elif status == 'pending': tick = "🕒"
+                else: tick = "✓"  # Por defecto un tick
                 line_content = f"{text}   {time} {tick}"
                 padding = " " * max(0, PAD_WIDTH - len(line_content))
                 formatted_lines.append(("", padding))
-                formatted_lines.append(("ansicyan bold", line_content))
-                
-            elif sender == "Sys":
-                center_pad = " " * max(0, (PAD_WIDTH - len(text)) // 2)
-                formatted_lines.append(("ansigray", f"{center_pad}--- {text} ---"))
-                
-            else:
-                formatted_lines.append(("ansiyellow", f"[{time}] {sender}:\n")) 
-                line_count += 1 
-                formatted_lines.append(("ansiyellow", f" > {text}")) 
+                formatted_lines.append(("ansicyan bold", line_content)) 
         
         self._last_cursor_y = line_count
         return formatted_lines
@@ -124,59 +149,65 @@ class ChatGUI:
         idx = self.contact_keys.index(self.current_cn) if self.current_cn in self.contact_keys else 0
         new_idx = (idx + delta) % len(self.contact_keys)
         self.current_cn = self.contact_keys[new_idx]
+        # Marcar mensajes como leídos al entrar al chat
+        self.db.mark_messages_as_read(self.current_cn, self.my_nick)
         self.refresh_ui()
 
     # --- CORRECCIÓN: Renombrado a add_peer para coincidir con main.py ---
     def add_peer(self, name, ip, port):
-        # Verificar si ya existe por IP para actualizar datos
-        real_exists_cn = None
-        for cn, data in self.db.get_all_contacts().items():
-            if data.get("ip") == ip:
-                real_exists_cn = cn
-                break
+        # Usar IP:Puerto como identificador único
+        contact_id = f"{ip}:{port}"
         
-        if real_exists_cn:
-            # Si existe y el nombre nuevo es diferente (y no es el ID por defecto), actualizamos
-            if real_exists_cn != name and "dni-im" not in name:
-                 # Opcional: Renombrar contacto en DB si se desea, o solo actualizar IP
-                 pass
-            self.db.add_or_update_contact(real_exists_cn, ip=ip, port=port)
+        # Verificar si ya existe este IP:Puerto
+        existing = self.db.get_contact_info(contact_id)
+        
+        if existing:
+            # Ya existe, actualizar nombre si cambió
+            if existing.get("name") != name and "dni-im" not in name:
+                self.db.update_contact_name(contact_id, name)
         else:
             # Nuevo contacto
-            self.db.add_or_update_contact(name, ip=ip, port=port)
-            if name not in self.contact_keys:
-                self.contact_keys.append(name)
+            self.db.add_or_update_contact(contact_id, name=name, ip=ip, port=port)
+            if contact_id not in self.contact_keys:
+                self.contact_keys.append(contact_id)
                 self.contact_keys.sort()
-            if not self.current_cn: self.current_cn = name
+            if not self.current_cn: self.current_cn = contact_id
             
         self.refresh_ui()
 
     def on_protocol_msg(self, addr, text, real_cn):
-        if real_cn in self.pending_handshakes: self.pending_handshakes.remove(real_cn)
+        # Usar IP:Puerto como identificador único
+        contact_id = f"{addr[0]}:{addr[1]}"
         
-        self.db.add_or_update_contact(real_cn, ip=addr[0], port=addr[1])
-        if real_cn not in self.contact_keys:
-            self.contact_keys.append(real_cn)
+        if contact_id in self.pending_handshakes: self.pending_handshakes.remove(contact_id)
+        
+        self.db.add_or_update_contact(contact_id, name=real_cn, ip=addr[0], port=addr[1])
+        if contact_id not in self.contact_keys:
+            self.contact_keys.append(contact_id)
             self.contact_keys.sort()
 
         ts = datetime.now().strftime("%H:%M")
         
         if text == "HANDSHAKE_OK":
-            self.db.set_contact_connected(real_cn, True)
-            self.db.add_message(real_cn, "Sys", "CONEXIÓN SEGURA ESTABLECIDA", "system", ts)
-            self.check_pending_messages(real_cn, addr[0], addr[1])
+            self.db.set_contact_connected(contact_id, True)
+            self.db.add_message(contact_id, "Sys", "CONEXIÓN SEGURA ESTABLECIDA", "system", ts)
+            self.check_pending_messages(contact_id, addr[0], addr[1])
         elif text.startswith("HANDSHAKE_ERROR"):
-            self.db.set_contact_connected(real_cn, False)
-            self.db.add_message(real_cn, "Sys", f"ERROR: {text}", "error", ts)
+            self.db.set_contact_connected(contact_id, False)
+            self.db.add_message(contact_id, "Sys", f"ERROR: {text}", "error", ts)
         elif text == "ERROR_DESCIFRADO":
-            self.db.add_message(real_cn, "Sys", "Error cifrado.", "error", ts)
+            self.db.add_message(contact_id, "Sys", "Error cifrado.", "error", ts)
         elif text.startswith("ACK|"):
             # ACK recibido, actualizar mensaje a "delivered" (doble tick)
             msg_id = text.split('|', 1)[1]
-            self.db.mark_message_status(real_cn, msg_id, "delivered")
+            self.db.mark_message_status(contact_id, msg_id, "delivered")
         else:
-            self.db.set_contact_connected(real_cn, True)
-            self.db.add_message(real_cn, real_cn, text, "received", ts)
+            self.db.set_contact_connected(contact_id, True)
+            msg_id = self.db.add_message(contact_id, real_cn, text, "received", ts)
+            
+            # Si ya estoy en ese chat, marcar como leído inmediatamente
+            if self.current_cn == contact_id:
+                self.db.mark_message_as_read_by_id(contact_id, msg_id)
             
         self.refresh_ui()
 
@@ -313,7 +344,37 @@ class ChatGUI:
             if not info: continue
             icon = "🟢" if info.get("is_connected") else ("🟡" if info.get("ip") else "🔴")
             prefix = "➤ " if k == self.current_cn else "  "
-            lines.append(f"{prefix}{icon} {k}")
+            
+            # Mostrar nombre legible en lugar de IP:Puerto
+            full_name = info.get("name", k)
+            
+            # Acortar nombre: solo nombre y primer apellido
+            name_parts = full_name.split()
+            if len(name_parts) >= 2:
+                # Formato: "APELLIDO, NOMBRE" -> "NOMBRE APELLIDO"
+                if "," in full_name:
+                    parts = full_name.split(",")
+                    apellidos = parts[0].strip().split()
+                    nombre = parts[1].strip().split()[0] if len(parts) > 1 else ""
+                    display_name = f"{nombre} {apellidos[0]}"
+                else:
+                    # Formato normal: "NOMBRE APELLIDO1 APELLIDO2" -> "NOMBRE APELLIDO1"
+                    display_name = f"{name_parts[0]} {name_parts[1]}"
+            else:
+                display_name = full_name
+            
+            # Si hay múltiples instancias del mismo nombre, añadir puerto
+            if ":" in k:
+                port = k.split(":")[1]
+                display_name = f"{display_name} [:{port}]"
+            
+            # Añadir campanita si hay mensajes no leídos
+            unread = self.db.get_unread_count(k, self.my_nick)
+            if unread > 0:
+                lines.append(f"{prefix}{icon} {display_name} 🔔({unread})")
+            else:
+                lines.append(f"{prefix}{icon} {display_name}")
+        
         self.w_contacts.text = "\n".join(lines)
         self.app.invalidate()
 

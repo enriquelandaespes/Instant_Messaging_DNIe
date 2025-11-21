@@ -54,21 +54,29 @@ class JsonDatabase:
         """Devuelve la info (ip, puerto, estado) de un contacto por su nombre (CN)."""
         return self.data["contacts"].get(cn)
 
-    def add_or_update_contact(self, cn, ip=None, port=None, update_seen=True):
+    def add_or_update_contact(self, cn, name=None, ip=None, port=None, update_seen=True):
         """Añade un contacto nuevo o actualiza su IP/Puerto."""
         if cn not in self.data["contacts"]:
             self.data["contacts"][cn] = {
+                "name": name or cn,
                 "ip": ip, 
                 "port": port, 
                 "is_connected": False, 
                 "msgs": []
             }
         else:
-            # Si ya existe, actualizamos IP/Puerto si nos los pasan
+            # Si ya existe, actualizamos los campos que nos pasan
+            if name: self.data["contacts"][cn]["name"] = name
             if ip: self.data["contacts"][cn]["ip"] = ip
             if port: self.data["contacts"][cn]["port"] = port
         
         self.save()
+    
+    def update_contact_name(self, cn, name):
+        """Actualiza solo el nombre de un contacto."""
+        if cn in self.data["contacts"]:
+            self.data["contacts"][cn]["name"] = name
+            self.save()
 
     def rename_contact(self, old_cn, new_cn):
         """Cambia el nombre de un contacto (ej: de 'Ruben_6666' a 'RUBEN SANZ')."""
@@ -102,7 +110,8 @@ class JsonDatabase:
             "text": text,
             "status": status,
             "time": timestamp,
-            "sent_timestamp": datetime.now().timestamp() if status == "sent" else None
+            "sent_timestamp": datetime.now().timestamp() if status == "sent" else None,
+            "read": False  # Inicializar como no leído
         }
         self.data["contacts"][cn]["msgs"].append(msg)
         self.save()
@@ -120,6 +129,35 @@ class JsonDatabase:
     def get_pending_messages(self, cn):
         """Devuelve mensajes que no se pudieron enviar."""
         return [(i, m) for i, m in enumerate(self.get_history(cn)) if m["status"] == "pending"]
+    
+    def get_unread_count(self, cn, my_nick):
+        """Devuelve el número de mensajes no leídos de un contacto."""
+        if cn not in self.data["contacts"]: return 0
+        msgs = self.data["contacts"][cn]["msgs"]
+        # Contar mensajes RECIBIDOS (status='received') que no están leídos
+        return sum(1 for m in msgs if m.get("status") == "received" and not m.get("read", False))
+    
+    def mark_messages_as_read(self, cn, my_nick):
+        """Marca todos los mensajes de un contacto como leídos."""
+        if cn not in self.data["contacts"]: return
+        msgs = self.data["contacts"][cn]["msgs"]
+        changed = False
+        for m in msgs:
+            # Marcar solo mensajes RECIBIDOS (status='received') como leídos
+            if m.get("status") == "received" and not m.get("read", False):
+                m["read"] = True
+                changed = True
+        if changed:
+            self.save()
+    
+    def mark_message_as_read_by_id(self, cn, msg_id):
+        """Marca un mensaje específico como leído."""
+        if cn not in self.data["contacts"]: return
+        for msg in self.data["contacts"][cn]["msgs"]:
+            if msg.get("id") == msg_id:
+                msg["read"] = True
+                self.save()
+                return
     
     def check_message_timeouts(self, cn, timeout_seconds=5):
         """Verifica si hay mensajes 'sent' que no recibieron ACK en el tiempo límite.
