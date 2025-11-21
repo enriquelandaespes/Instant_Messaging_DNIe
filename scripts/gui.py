@@ -1,324 +1,188 @@
 # gui.py
 import asyncio
-from datetime import datetime
 from prompt_toolkit.application import Application
-from prompt_toolkit.layout import Layout, HSplit, VSplit, Window
+from prompt_toolkit.layout import Layout, HSplit, VSplit
 from prompt_toolkit.widgets import TextArea, Frame
-from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.document import Document
-from prompt_toolkit.data_structures import Point
+from prompt_toolkit.styles import Style
 
 class ChatGUI:
-    def __init__(self, protocol, my_nick, db):
-        self.protocol = protocol 
+    # --- FIX: Aceptamos 'db' para que no falle main.py ---
+    def __init__(self, protocol, my_nick, db=None):
+        self.protocol = protocol
         self.my_nick = my_nick
-        self.db = db
+        self.db = db 
         
-        self.contact_keys = [] 
-        self.current_cn = None 
+        # Datos de contactos
+        self.contacts = {} 
+        self.selected_idx = 0
+        self.current_key = None 
 
+        # Widgets
         self.w_contacts = TextArea(focusable=False, width=35)
-        self.chat_control = FormattedTextControl(
-            text=self._get_chat_content,
-            get_cursor_position=self._get_chat_cursor_position,
-            focusable=False 
-        )
-        self.w_chat_window = Window(content=self.chat_control, wrap_lines=True, always_hide_cursor=False)
+        self.w_chat = TextArea(focusable=False, scrollbar=True, wrap_lines=True)
         self.w_input = TextArea(height=3, prompt="> ", multiline=False)
 
-        self.layout = Layout(
-            HSplit([
-                VSplit([
-                    Frame(self.w_contacts, title="Vecinos (DNIe)"), 
-                    Frame(self.w_chat_window, title=self._get_chat_title)
-                ]),
-                Frame(self.w_input, title=f"Escribe aquí ({my_nick})")
+        # Layout
+        self.layout = Layout(HSplit([
+            VSplit([
+                Frame(self.w_contacts, title="Contactos"), 
+                Frame(self.w_chat, title="Chat Seguro")
             ]),
-            focused_element=self.w_input
-        )
+            Frame(self.w_input, title=f"Escribe (Enter) - Soy: {my_nick}")
+        ]))
 
+        # Keybindings
         kb = KeyBindings()
+        
         @kb.add("c-c")
         def _(event): event.app.exit()
+
         @kb.add("up")
         def _(event): self.move_selection(-1)
+        
         @kb.add("down")
         def _(event): self.move_selection(1)
+
         @kb.add("enter")
-        def _(event): asyncio.create_task(self.handle_enter()) 
+        def _(event): self.handle_enter()
 
-        self.app = Application(
-            layout=self.layout, 
-            key_bindings=kb, 
-            full_screen=True, 
-            mouse_support=True
-        )
-        
-        self._load_initial_contacts()
-
-    def _get_chat_cursor_position(self):
-        lines = self._get_chat_content()
-        row_count = 0
-        for item in lines:
-            if item[1] == "\n": 
-                row_count += 1
-            else:
-                row_count += item[1].count('\n') 
-        return Point(x=0, y=row_count)
-
-    def _load_initial_contacts(self):
-        for cn in self.db.get_all_contacts().keys():
-            if cn not in self.contact_keys:
-                self.contact_keys.append(cn)
-        
-        self.contact_keys.sort()
-        if self.contact_keys and self.current_cn is None:
-            self.current_cn = self.contact_keys[0]
-        self.refresh_ui()
-
-    def _get_chat_title(self):
-        if not self.current_cn: return "Chat Seguro"
-        
-        contact_info = self.db.get_contact_info(self.current_cn)
-        
-        status_text = ""
-        if contact_info and contact_info.get("is_connected"):
-             status_text = "🟢 CONECTADO"
-        elif contact_info and contact_info.get("ip") and contact_info.get("port"):
-             status_text = "🟡 DISPONIBLE" 
-        else:
-             status_text = "🔴 OFFLINE"
-             
-        return f"Chat con {self.current_cn} [{status_text}]"
-
-    def _get_chat_content(self):
-        if not self.current_cn: return [("class:info", "Esperando contactos...")]
-        
-        msgs = self.db.get_history(self.current_cn)
-        formatted_lines = []
-        PAD_WIDTH = 80 
-        
-        for m in msgs:
-            sender = m.get('sender', 'Desconocido')
-            text = m.get('text', '')
-            time = m.get('time', '??:??')
-            status = m.get('status', '')
-            
-            if sender == self.my_nick: 
-                ticks = ""
-                if status == 'pending': ticks = "✓" 
-                elif status == 'sent': ticks = "✓" 
-                elif status == 'received': ticks = "✓✓" 
-                
-                line_content = f"{text}   {time} {ticks}"
-                padding = " " * max(0, PAD_WIDTH - len(line_content))
-                formatted_lines.append(("", "\n"))
-                formatted_lines.append(("", padding))
-                formatted_lines.append(("ansicyan bold", f"{line_content}"))
-            elif status == "system": 
-                formatted_lines.append(("", "\n"))
-                formatted_lines.append(("ansigray", f"--- {text} ---".center(PAD_WIDTH)))
-            elif status == "error": 
-                formatted_lines.append(("", "\n"))
-                formatted_lines.append(("ansired", f"--- {text} ---".center(PAD_WIDTH)))
-            else: 
-                formatted_lines.append(("", "\n"))
-                formatted_lines.append(("ansiyellow", f"[{time}] {sender}: {text}"))
-                
-        return formatted_lines
+        self.app = Application(layout=self.layout, key_bindings=kb, full_screen=True, mouse_support=True, refresh_interval=0.5)
 
     def move_selection(self, delta):
-        if not self.contact_keys: return
-        idx = 0
-        if self.current_cn in self.contact_keys:
-            idx = self.contact_keys.index(self.current_cn)
-        new_idx = (idx + delta) % len(self.contact_keys)
-        self.current_cn = self.contact_keys[new_idx]
+        keys = list(self.contacts.keys())
+        if not keys: return
+        self.selected_idx = (self.selected_idx + delta) % len(keys)
+        self.current_key = keys[self.selected_idx]
         self.refresh_ui()
 
-    def add_or_update_peer(self, discovered_name, ip, port):
-        """Llamado cuando Zeroconf descubre un peer."""
-        # CORRECCIÓN: Buscar si ya existe un contacto con esta IP:puerto
-        existing_cn = self.db.find_contact_by_address(ip, port)
+    def add_peer(self, name, ip, port):
+        # FIX DUPLICADOS: Usamos ip:port como clave única
+        key = f"{ip}:{port}"
         
-        if existing_cn:
-            # Ya existe un contacto con esta dirección, actualizar su info
-            cn_to_manage = existing_cn
-            self.db.add_or_update_contact(cn_to_manage, ip=ip, port=port, update_seen=True)
-        else:
-            # Nuevo contacto descubierto
-            cn_to_manage = discovered_name
-            self.db.add_or_update_contact(cn_to_manage, ip=ip, port=port, update_seen=True)
-        
-        if cn_to_manage not in self.contact_keys:
-            self.contact_keys.append(cn_to_manage)
-            self.contact_keys.sort()
-        
-        if self.current_cn is None:
-            self.current_cn = cn_to_manage
+        if key in self.contacts:
+            # Si ya existe, actualizamos el nombre solo si el nuevo es mejor (no es "Desconocido")
+            current_name = self.contacts[key]["name"]
+            if "DNIe" in current_name and "DNIe" not in name:
+                 self.contacts[key]["name"] = name
+            return 
 
+        # Nuevo contacto
+        self.contacts[key] = {
+            "name": name, 
+            "msgs": [], 
+            "connected": False,
+            "msg_queue": [] 
+        }
+        if self.current_key is None: 
+            self.current_key = key
         self.refresh_ui()
 
-    async def on_protocol_msg(self, addr, text, real_cn_from_cert, old_cn=None):
-        """Callback llamado por el protocolo cuando recibe mensajes o eventos."""
-        # CORRECCIÓN: Manejar consolidación de contactos
-        if text == "CONTACT_CONSOLIDATED" and old_cn:
-            # Un contacto fue consolidado (nombre antiguo → nombre real del certificado)
-            print(f"🔄 GUI: Consolidando '{old_cn}' → '{real_cn_from_cert}'")
-            
-            # Eliminar el nombre antiguo de la lista de contactos
-            if old_cn in self.contact_keys:
-                self.contact_keys.remove(old_cn)
-            
-            # Asegurar que el nombre nuevo está en la lista
-            if real_cn_from_cert not in self.contact_keys:
-                self.contact_keys.append(real_cn_from_cert)
-                self.contact_keys.sort()
-            
-            # Si estabas viendo el contacto antiguo, cambiar al nuevo
-            if self.current_cn == old_cn:
-                self.current_cn = real_cn_from_cert
-            
-            self.refresh_ui()
-            return
+    def on_protocol_msg(self, addr, text, nombre):
+        key = f"{addr[0]}:{addr[1]}"
         
-        # Asegurar que el contacto existe en la DB con el CN real
-        self.db.add_or_update_contact(real_cn_from_cert, ip=addr[0], port=addr[1], update_seen=True)
+        # Registrar contacto si es nuevo
+        if key not in self.contacts:
+            self.add_peer(nombre, addr[0], addr[1])
         
-        if real_cn_from_cert not in self.contact_keys:
-            self.contact_keys.append(real_cn_from_cert)
-            self.contact_keys.sort()
-            
-        timestamp = datetime.now().strftime("%H:%M")
-
+        contact = self.contacts[key]
+        
         if text == "HANDSHAKE_OK":
-            self.db.set_contact_connected(real_cn_from_cert, True)
+            contact["connected"] = True
+            contact["name"] = nombre 
+            contact["msgs"].append({"text": f"🔒 CONEXIÓN SEGURA: {nombre}", "sender": "sys", "status": "info"})
             
-            # CORRECCIÓN: Evitar mensajes duplicados de conexión
-            history = self.db.get_history(real_cn_from_cert)
-            # Comprobamos si el último mensaje ya es el de conexión establecida
-            if not history or history[-1].get('text') != "CONEXIÓN SEGURA ESTABLECIDA":
-                 self.db.add_message(real_cn_from_cert, "Sys", "CONEXIÓN SEGURA ESTABLECIDA", "system", timestamp)
-            
-            await self.check_pending_messages(real_cn_from_cert, addr[0], addr[1]) 
+            # VACIAR COLA (Enviar mensajes pendientes)
+            if contact["msg_queue"]:
+                count = len(contact["msg_queue"])
+                contact["msgs"].append({"text": f"📤 Enviando {count} mensajes en cola...", "sender": "sys", "status": "info"})
+                for msg_text in contact["msg_queue"]:
+                    # Reintentar envío
+                    exito = self.protocol.enviar_mensaje(addr[0], addr[1], msg_text)
+                    # Actualizamos estado en el chat
+                    status = "sent" if exito else "pending"
+                    contact["msgs"].append({"text": msg_text, "sender": "yo", "status": status})
+                contact["msg_queue"] = [] 
+                
+        else:
+            # Mensaje recibido
+            contact["connected"] = True
+            contact["msgs"].append({"text": text, "sender": "el", "status": "received"})
+            # Si tenemos DB, podríamos guardar aquí: if self.db: self.db.save(...)
 
-        elif text == "HANDSHAKE_START":
-            history = self.db.get_history(real_cn_from_cert)
-            if not history or history[-1].get('text') != "Iniciando conexión segura...":
-                self.db.add_message(real_cn_from_cert, "Sys", "Iniciando conexión segura...", "system", timestamp)
-
-        elif text == "HANDSHAKE_ERROR":
-            self.db.set_contact_connected(real_cn_from_cert, False)
-            self.db.add_message(real_cn_from_cert, "Sys", "ERROR: Falló la conexión segura.", "error", timestamp)
-            
-        elif text == "ERROR_CIFRADO":
-             self.db.set_contact_connected(real_cn_from_cert, False)
-             self.db.add_message(real_cn_from_cert, "Sys", "ERROR: Mensaje corrupto o clave inválida.", "error", timestamp)
-
-        else: # Mensaje normal recibido
-            self.db.add_message(real_cn_from_cert, real_cn_from_cert, text, "received", timestamp)
-            self.db.set_contact_connected(real_cn_from_cert, True) 
-
-        if self.current_cn is None:
-            self.current_cn = real_cn_from_cert
-        
         self.refresh_ui()
 
-    async def check_pending_messages(self, cn, ip, port):
-        pending = self.db.get_pending_messages(cn)
-        if not pending: return
-        
-        sent_indices = []
-        for i, msg in pending:
-            await asyncio.sleep(0.05) 
-            success = self.protocol.enviar_mensaje(ip, port, msg["text"])
-            if success:
-                sent_indices.append(i)
-        
-        if sent_indices:
-            self.db.mark_message_status(cn, sent_indices, "sent")
-            self.refresh_ui()
-
-    async def handle_enter(self):
-        if not self.current_cn: return
+    def handle_enter(self):
+        if not self.current_key: return
         text = self.w_input.text.strip()
-        
-        contact_info = self.db.get_contact_info(self.current_cn)
-        if not contact_info: 
-            self.w_input.text = ""
-            self.refresh_ui()
-            return
+        self.w_input.text = "" 
 
-        ip = contact_info.get("ip")
-        port = contact_info.get("port") 
-        is_connected = contact_info.get("is_connected")
-        
-        timestamp = datetime.now().strftime("%H:%M")
+        if not text: return
 
-        # CASO 1: No tenemos IP/Puerto (Offline total)
-        if not ip or not port:
-            if text:
-                self.db.add_message(self.current_cn, self.my_nick, text, "pending", timestamp)
-                self.db.add_message(self.current_cn, "Sys", "Mensaje en cola. Esperando descubrir usuario...", "system", timestamp)
-            self.w_input.text = ""
-            self.refresh_ui()
-            return
+        contact = self.contacts[self.current_key]
+        ip, port = self.current_key.split(":")
+        port = int(port)
 
-        # CASO 2: Tenemos IP pero NO conexión segura -> Iniciar Handshake
-        # CORRECCIÓN: Verificar si hay handshake en progreso usando handshake_in_progress (set de direcciones)
-        addr = (ip, port)
-        if not is_connected and addr not in self.protocol.handshake_in_progress:
-            self.protocol.enviar_handshake(ip, port)
+        # Si estamos conectados, intentamos enviar
+        if contact["connected"]:
+            exito = self.protocol.enviar_mensaje(ip, port, text)
+            if exito:
+                contact["msgs"].append({"text": text, "sender": "yo", "status": "sent"})
+            else:
+                # Falló el socket: desconectamos y encolamos
+                contact["connected"] = False
+                contact["msg_queue"].append(text)
+                contact["msgs"].append({"text": text, "sender": "yo", "status": "pending"})
+                self.protocol.enviar_handshake(ip, port)
+        else:
+            # No conectados: Encolamos directamente
+            contact["msg_queue"].append(text)
+            contact["msgs"].append({"text": text, "sender": "yo", "status": "pending"})
             
-            if text:
-                self.db.add_message(self.current_cn, self.my_nick, text, "pending", timestamp)
-                # Evitar mensajes duplicados de "Conexión en progreso"
-                history = self.db.get_history(self.current_cn)
-                if not history or history[-1].get('text') != "Mensaje en cola. Conexión en progreso...":
-                    self.db.add_message(self.current_cn, "Sys", "Mensaje en cola. Conexión en progreso...", "system", timestamp)
-            
-            self.w_input.text = ""
-            self.refresh_ui()
-            return
-        
-        # CASO 3: Hay handshake en progreso o ya estamos conectados
-        if text:
-            if is_connected: 
-                success = self.protocol.enviar_mensaje(ip, port, text)
-                if success:
-                    self.db.add_message(self.current_cn, self.my_nick, text, "sent", timestamp)
-                else:
-                    self.db.add_message(self.current_cn, self.my_nick, text, "pending", timestamp)
-            else: 
-                self.db.add_message(self.current_cn, self.my_nick, text, "pending", timestamp)
-                # Evitar mensajes duplicados
-                history = self.db.get_history(self.current_cn)
-                if not history or history[-1].get('text') != "Mensaje en cola. Conexión en progreso...":
-                    self.db.add_message(self.current_cn, "Sys", "Mensaje en cola. Conexión en progreso...", "system", timestamp)
-            
-            self.w_input.text = ""
-            self.refresh_ui()
+            # Iniciamos handshake si no está en curso
+            addr_tuple = (ip, port)
+            if addr_tuple not in self.protocol.handshake_in_progress:
+                contact["msgs"].append({"text": "🟡 Conectando...", "sender": "sys", "status": "info"})
+                self.protocol.enviar_handshake(ip, port)
+
+        self.refresh_ui()
 
     def refresh_ui(self):
+        keys = list(self.contacts.keys())
         lines = []
-        all_contact_cns = sorted(list(self.contact_keys)) 
-
-        for cn_key in all_contact_cns:
-            contact_info = self.db.get_contact_info(cn_key)
-            if not contact_info: continue
-
-            icon = "🔴" 
-            if contact_info.get("is_connected"):
-                icon = "🟢" 
-            elif contact_info.get("ip") and contact_info.get("port"): 
-                icon = "🟡" 
-
-            prefix = "➜ " if cn_key == self.current_cn else "  "
-            lines.append(f"{prefix}{icon} {cn_key}")
-        
+        for i, k in enumerate(keys):
+            c = self.contacts[k]
+            prefix = "➤ " if k == self.current_key else "  "
+            
+            # Círculos de estado
+            state_icon = "🟢" if c["connected"] else "🔴"
+            # Indicador de cola
+            queue_info = f"[{len(c['msg_queue'])}]" if c['msg_queue'] else ""
+            
+            lines.append(f"{prefix}{state_icon} {c['name']} {queue_info}")
+            
         self.w_contacts.text = "\n".join(lines)
-        self.app.invalidate()
+
+        if self.current_key:
+            c = self.contacts[self.current_key]
+            chat_lines = []
+            for m in c["msgs"]:
+                if m["sender"] == "sys":
+                    chat_lines.append(f"--- {m['text']} ---")
+                elif m["sender"] == "yo":
+                    # Tics de estado
+                    tic = "✓✓" if m["status"] == "sent" else "🕒"
+                    chat_lines.append(f"Yo: {m['text']} {tic}")
+                else:
+                    chat_lines.append(f"{c['name']}: {m['text']}")
+            
+            self.w_chat.text = "\n".join(chat_lines)
+            status_txt = "ONLINE" if c["connected"] else "OFFLINE"
+            self.w_chat.title = f"Chat con {c['name']} [{status_txt}]"
+        else:
+            self.w_chat.text = "Esperando contactos..."
+            
+        self.app.invalidate() 
 
     async def run(self):
         await self.app.run_async()
