@@ -196,8 +196,6 @@ class ChatGUI:
             # Si no hay contacto seleccionado, seleccionar el que acaba de hablar
             self.current_cn = real_cn_from_cert
         
-        # --- LÍNEA ERRÓNEA BORRADA AQUÍ ---
-
         self.refresh_ui()
 
     async def check_pending_messages(self, cn, ip, port):
