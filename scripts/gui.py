@@ -17,8 +17,6 @@ class ChatGUI:
         self.contact_keys = [] 
         self.current_cn = None 
         self.pending_handshakes = set()
-
-        # --- Cache para evitar crasheos de índice ---
         self._last_cursor_y = 0 
 
         # --- Widgets ---
@@ -63,8 +61,6 @@ class ChatGUI:
         self._load_initial_contacts()
 
     def _get_chat_cursor_position(self):
-        # CORRECCIÓN CRÍTICA: Usamos el valor calculado durante la generación del texto
-        # en lugar de recalcularlo, para evitar desincronización si llegan mensajes nuevos.
         return Point(x=0, y=self._last_cursor_y)
 
     def _load_initial_contacts(self):
@@ -89,45 +85,34 @@ class ChatGUI:
             self._last_cursor_y = 0
             return [("class:info", "Esperando contactos...")]
         
-        # Obtenemos copia para evitar modificaciones durante iteración
         msgs = list(self.db.get_history(self.current_cn))
         formatted_lines = []
         PAD_WIDTH = 80 
-        
-        # Contador de líneas reales para el cursor
         line_count = 0
 
         for m in msgs:
             sender, text, time, status = m.get('sender'), m.get('text'), m.get('time'), m.get('status', '')
-            
-            # Salto de línea inicial
             formatted_lines.append(("", "\n"))
             line_count += 1
             
             if sender == self.my_nick:
-                # PROPIOS (DERECHA)
                 if status == 'delivered': tick = "✓✓"
                 elif status == 'sent': tick = "✓"
                 else: tick = "🕒"
-                
                 line_content = f"{text}   {time} {tick}"
                 padding = " " * max(0, PAD_WIDTH - len(line_content))
-                
                 formatted_lines.append(("", padding))
                 formatted_lines.append(("ansicyan bold", line_content))
                 
             elif sender == "Sys":
-                # SISTEMA (CENTRO)
                 center_pad = " " * max(0, (PAD_WIDTH - len(text)) // 2)
                 formatted_lines.append(("ansigray", f"{center_pad}--- {text} ---"))
                 
             else:
-                # RECIBIDOS (IZQUIERDA)
                 formatted_lines.append(("ansiyellow", f"[{time}] {sender}:\n")) 
-                line_count += 1 # La cabecera del nombre ocupa una línea extra visual si hay \n
+                line_count += 1 
                 formatted_lines.append(("ansiyellow", f" > {text}")) 
         
-        # Guardamos la posición segura del cursor (al final del texto generado)
         self._last_cursor_y = line_count
         return formatted_lines
 
@@ -138,22 +123,34 @@ class ChatGUI:
         self.current_cn = self.contact_keys[new_idx]
         self.refresh_ui()
 
-    def add_or_update_peer(self, name, ip, port):
-        real_exists = False
+    # --- CORRECCIÓN: Renombrado a add_peer para coincidir con main.py ---
+    def add_peer(self, name, ip, port):
+        # Verificar si ya existe por IP para actualizar datos
+        real_exists_cn = None
         for cn, data in self.db.get_all_contacts().items():
             if data.get("ip") == ip:
-                real_exists = True
+                real_exists_cn = cn
                 break
-        if not real_exists:
+        
+        if real_exists_cn:
+            # Si existe y el nombre nuevo es diferente (y no es el ID por defecto), actualizamos
+            if real_exists_cn != name and "dni-im" not in name:
+                 # Opcional: Renombrar contacto en DB si se desea, o solo actualizar IP
+                 pass
+            self.db.add_or_update_contact(real_exists_cn, ip=ip, port=port)
+        else:
+            # Nuevo contacto
             self.db.add_or_update_contact(name, ip=ip, port=port)
             if name not in self.contact_keys:
                 self.contact_keys.append(name)
                 self.contact_keys.sort()
             if not self.current_cn: self.current_cn = name
+            
         self.refresh_ui()
 
     def on_protocol_msg(self, addr, text, real_cn):
         if real_cn in self.pending_handshakes: self.pending_handshakes.remove(real_cn)
+        
         self.db.add_or_update_contact(real_cn, ip=addr[0], port=addr[1])
         if real_cn not in self.contact_keys:
             self.contact_keys.append(real_cn)
@@ -201,8 +198,7 @@ class ChatGUI:
         ts = datetime.now().strftime("%H:%M")
 
         if not ip:
-            if text:
-                self.db.add_message(self.current_cn, "Sys", "Usuario Offline", "error", ts)
+            if text: self.db.add_message(self.current_cn, "Sys", "Usuario Offline", "error", ts)
             self.w_input.text = ""
             self.refresh_ui()
             return
@@ -219,9 +215,10 @@ class ChatGUI:
             self.w_input.text = ""
             self.refresh_ui()
             
-            await asyncio.sleep(10)
+            await asyncio.sleep(8) # Timeout reducido un poco
             if self.current_cn in self.pending_handshakes:
                 self.pending_handshakes.remove(self.current_cn)
+                self.db.add_message(self.current_cn, "Sys", "Tiempo de espera agotado.", "error", ts)
                 self.refresh_ui()
             return
 
