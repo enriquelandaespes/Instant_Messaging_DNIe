@@ -42,32 +42,25 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
     async def handle_handshake(self, payload, addr, is_response):
         try:
             offset = 0
-            # 1. PubKey (32)
             if len(payload) < 32: return
             peer_pub_bytes = payload[offset : offset+32]
             offset += 32
             
-            # 2. Len Cert (2)
-            if len(payload) < offset + 2: return
             cert_len = struct.unpack("!H", payload[offset : offset+2])[0]
             offset += 2
             
-            # 3. Cert
-            if len(payload) < offset + cert_len: return
             cert_bytes = payload[offset : offset+cert_len]
             offset += cert_len
             
-            # 4. Firma (resto)
-            _signature = payload[offset:]
+            # (Ignoramos firma pero leemos offset)
+            _ = payload[offset:]
 
-            # --- LIMPIEZA DEL NOMBRE (DNIe) ---
+            # Nombre DNIe limpio
             try:
                 cert_obj = x509.load_der_x509_certificate(cert_bytes, default_backend())
                 cn_attrs = cert_obj.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
                 if cn_attrs:
-                    raw_name = cn_attrs[0].value
-                    # Eliminamos sufijos comunes del DNIe para que quede limpio
-                    nombre = raw_name.replace("(Autenticación)", "").replace("(Firma)", "").strip()
+                    nombre = cn_attrs[0].value.replace("(Autenticación)", "").replace("(Firma)", "").strip()
                 else:
                     nombre = "DNIe Desconocido"
             except:
@@ -85,17 +78,15 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             }
             self.handshake_in_progress[addr] = "ESTABLISHED"
             
-            # AVISAR A LA GUI (Enviamos el nombre limpio)
             if self.callback:
                 self.callback(addr, "HANDSHAKE_OK", nombre)
 
-            # Si nos contactaron a nosotros, respondemos
             if not is_response:
                 self._enviar_paquete_credenciales(addr[0], addr[1], tipo=PKT_HANDSHAKE_RESP)
                 self.handshake_in_progress[addr] = "RESPONSED"
 
         except Exception as e:
-            print(f"Error Handshake: {e}")
+            print(f"Handshake Error: {e}")
             if addr in self.handshake_in_progress:
                 del self.handshake_in_progress[addr]
 
@@ -129,18 +120,18 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             )
             self.transport.sendto(packet, (ip, port))
         except Exception as e:
-            print(f"Error enviando credenciales: {e}")
-            addr = (ip, port)
-            if addr in self.handshake_in_progress:
-                del self.handshake_in_progress[addr]
+            print(f"Error env credenciales: {e}")
+            if (ip, port) in self.handshake_in_progress:
+                del self.handshake_in_progress[(ip, port)]
 
     def enviar_mensaje(self, ip, port, texto):
+        """ Devuelve True si se envió, False si no hay conexión """
         addr = (ip, port)
+        
+        # 1. COMPROBACIÓN DE CONEXIÓN
         if addr not in self.sessions:
-            # No hay sesión, intentamos handshake
-            print(f"⚠️ Sin sesión con {addr}. Iniciando handshake...")
-            self.enviar_handshake(ip, port)
-            return False # Devolvemos False para encolar en GUI
+            # No hay sesión criptográfica establecida
+            return False 
         
         try:
             cipher = self.sessions[addr]['cipher']
@@ -148,6 +139,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             ciphertext = cipher.encrypt(nonce, texto.encode('utf-8'), None)
             packet = struct.pack("B", PKT_MSG) + self.my_cid + nonce + ciphertext
             self.transport.sendto(packet, addr)
-            return True # Mensaje enviado
-        except:
-            return False
+            return True # Enviado correctamente
+        except Exception as e:
+            print(f"Error socket msg: {e}")
+            return False # Fallo en el envío
