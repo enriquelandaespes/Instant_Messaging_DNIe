@@ -17,15 +17,16 @@ PKT_MSG            = 0x02
 PKT_HANDSHAKE_RESP = 0x03
 
 class SecureIMProtocol(asyncio.DatagramProtocol):
-    def __init__(self, dnie_manager, on_msg_callback):
+    # --- CORRECCIÓN AQUÍ: Añadido argumento 'db' ---
+    def __init__(self, dnie_manager, db, on_msg_callback):
         self.dnie = dnie_manager
+        self.db = db  # Guardamos la referencia a la base de datos
         self.transport = None
         self.callback = on_msg_callback
         self.sessions = {}
         self.my_cid = os.urandom(4)
         
-        # --- NUEVO: Diccionario para guardar estado del handshake ---
-        # Clave: "ip:port", Valor: "INITIATED", "RESPONSED", "ESTABLISHED"
+        # Estado del handshake para evitar bloqueos en la GUI
         self.handshake_status = {} 
 
     def connection_made(self, transport):
@@ -34,7 +35,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
     def datagram_received(self, data, addr):
         if len(data) < 5: return
         msg_type = data[0]
-        # El payload empieza en el byte 5 (después del tipo + CID)
         payload = data[5:]
 
         if msg_type == PKT_HANDSHAKE_INIT:
@@ -63,13 +63,12 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             cert_bytes = payload[offset : offset+cert_len]
             offset += cert_len
 
-            # 4. La firma está al final
+            # 4. La firma está al final (la ignoramos por ahora pero leemos el offset)
             _signature = payload[offset:]
 
             # --- EXTRACCIÓN DEL NOMBRE ---
             try:
                 cert_obj = x509.load_der_x509_certificate(cert_bytes, default_backend())
-                # Usamos OID para buscar el Common Name de forma segura
                 cn_attributes = cert_obj.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
                 if cn_attributes:
                     nombre = cn_attributes[0].value
@@ -91,24 +90,21 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 'state': 'ESTABLISHED'
             }
             
-            # Actualizar estado del handshake
             self.handshake_status[key] = "ESTABLISHED"
 
             # Notificar a la GUI
             if self.callback:
                 self.callback(addr, "HANDSHAKE_OK", nombre)
 
-            # Si somos nosotros el servidor (quien recibió el INIT), respondemos
+            # Si somos el receptor del handshake, respondemos con nuestras credenciales
             if not is_response:
                 self._enviar_paquete_credenciales(addr[0], addr[1], tipo=PKT_HANDSHAKE_RESP)
-                # Marcamos como contestado
                 self.handshake_status[key] = "RESPONSED"
 
         except Exception as e:
             print(f"❌ Error en handshake con {addr}: {e}")
             import traceback
             traceback.print_exc()
-            # Limpiar estado si falla
             if key in self.handshake_status:
                 del self.handshake_status[key]
 
@@ -122,13 +118,18 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             nonce = payload[:12]
             ciphertext = payload[12:]
             plaintext = cipher.decrypt(nonce, ciphertext, None)
+            
+            decoded_msg = plaintext.decode('utf-8')
+            
+            # Opcional: Si quieres guardar mensajes en la DB automáticamente, hazlo aquí:
+            # if self.db: self.db.add_message(nombre, decoded_msg, "received")
+
             if self.callback:
-                self.callback(addr, plaintext.decode('utf-8'), nombre)
+                self.callback(addr, decoded_msg, nombre)
         except Exception as e:
             print(f"Error descifrando msg de {nombre}: {e}")
 
     def enviar_handshake(self, ip, port):
-        # Actualizamos el estado antes de enviar para que la GUI lo sepa
         key = f"{ip}:{port}"
         self.handshake_status[key] = "INITIATED"
         self._enviar_paquete_credenciales(ip, port, tipo=PKT_HANDSHAKE_INIT)
@@ -138,7 +139,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         try:
             cert, firma = self.dnie.obtener_credenciales()
             cert_len = len(cert)
-            # Estructura: TIPO(1) + CID(4) + PUB(32) + LEN(2) + CERT + FIRMA
             packet = (
                 struct.pack("B", tipo) + 
                 self.my_cid + 
