@@ -167,6 +167,10 @@ class ChatGUI:
             self.db.add_message(real_cn, "Sys", f"ERROR: {text}", "error", ts)
         elif text == "ERROR_DESCIFRADO":
             self.db.add_message(real_cn, "Sys", "Error cifrado.", "error", ts)
+        elif text.startswith("ACK|"):
+            # ACK recibido, actualizar mensaje a "delivered" (doble tick)
+            msg_id = text.split('|', 1)[1]
+            self.db.mark_message_status(real_cn, msg_id, "delivered")
         else:
             self.db.set_contact_connected(real_cn, True)
             self.db.add_message(real_cn, real_cn, text, "received", ts)
@@ -178,19 +182,18 @@ class ChatGUI:
         self.app.invalidate()
 
     def check_pending_messages(self, cn, ip, port):
+        """Envía todos los mensajes pendientes en cola cuando se reconecta"""
         pending = self.db.get_pending_messages(cn)
         if not pending: return
-        ids = []
         for i, msg in pending:
-            self.protocol.enviar_mensaje(ip, port, msg["text"], msg["id"])
-            ids.append(i)
-        if ids:
-            self.db.mark_message_status(cn, ids, "sent") 
-            self.refresh_ui()
+            if self.protocol.enviar_mensaje(ip, port, msg["text"], msg["id"]):
+                self.db.mark_message_status(cn, msg["id"], "sent")
+        self.refresh_ui()
 
     async def handle_enter(self):
         if not self.current_cn: return
         text = self.w_input.text.strip()
+        if not text: return  # No enviar si está vacío
         
         info = self.db.get_contact_info(self.current_cn)
         if not info: return 
@@ -198,39 +201,51 @@ class ChatGUI:
         ts = datetime.now().strftime("%H:%M")
 
         if not ip:
-            if text: self.db.add_message(self.current_cn, "Sys", "Usuario Offline", "error", ts)
+            self.db.add_message(self.current_cn, "Sys", "Usuario Offline - Sin IP", "error", ts)
             self.w_input.text = ""
             self.refresh_ui()
             return
 
+        # Verificar si está conectado ANTES de enviar
         if not info.get("is_connected"):
-            if self.current_cn in self.pending_handshakes: return 
-            self.protocol.enviar_handshake(ip, port)
-            self.pending_handshakes.add(self.current_cn)
-            
-            self.db.add_message(self.current_cn, "Sys", "Iniciando conexión segura...", "system", ts)
-            if text:
-                self.db.add_message(self.current_cn, self.my_nick, text, "pending", ts)
-            
+            # Poner mensaje en cola (pending) y marcar como desconectado
+            self.db.add_message(self.current_cn, self.my_nick, text, "pending", ts)
+            self.db.set_contact_connected(self.current_cn, False)  # Marcar rojo
             self.w_input.text = ""
-            self.refresh_ui()
             
-            await asyncio.sleep(8) # Timeout reducido un poco
-            if self.current_cn in self.pending_handshakes:
-                self.pending_handshakes.remove(self.current_cn)
-                self.db.add_message(self.current_cn, "Sys", "Tiempo de espera agotado.", "error", ts)
+            # Intentar reconectar si no está ya intentando
+            if self.current_cn not in self.pending_handshakes:
+                self.protocol.enviar_handshake(ip, port)
+                self.pending_handshakes.add(self.current_cn)
+                self.db.add_message(self.current_cn, "Sys", "Destinatario desconectado. Mensaje en cola.", "system", ts)
+                
+                self.refresh_ui()
+                
+                # Timeout de reconexión
+                await asyncio.sleep(8)
+                if self.current_cn in self.pending_handshakes:
+                    self.pending_handshakes.remove(self.current_cn)
+                    self.db.add_message(self.current_cn, "Sys", "No se pudo reconectar. Mensaje guardado en cola.", "error", ts)
+                    self.refresh_ui()
+            else:
                 self.refresh_ui()
             return
 
-        if text:
-            msg_id = self.db.add_message(self.current_cn, self.my_nick, text, "sent", ts)
-            if self.protocol.enviar_mensaje(ip, port, text, msg_id):
-                self.w_input.text = ""
-            else:
-                self.db.set_contact_connected(self.current_cn, False)
-                self.db.add_message(self.current_cn, "Sys", "Fallo de envío. Reconectando...", "error", ts)
-                self.protocol.enviar_handshake(ip, port)
-            self.refresh_ui()
+        # Si está conectado, enviar normalmente
+        msg_id = self.db.add_message(self.current_cn, self.my_nick, text, "sent", ts)
+        self.w_input.text = ""
+        
+        if not self.protocol.enviar_mensaje(ip, port, text, msg_id):
+            # Si falla el envío, marcar como desconectado y cambiar estado a pending
+            self.db.mark_message_status(self.current_cn, msg_id, "pending")
+            self.db.set_contact_connected(self.current_cn, False)
+            self.db.add_message(self.current_cn, "Sys", "Fallo de envío. Mensaje en cola.", "error", ts)
+            
+            # Intentar reconectar
+            self.protocol.enviar_handshake(ip, port)
+            self.pending_handshakes.add(self.current_cn)
+            
+        self.refresh_ui()
 
     def refresh_ui(self):
         lines = []

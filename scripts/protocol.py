@@ -12,7 +12,8 @@ import config
 
 PKT_HANDSHAKE_INIT = 0x01  
 PKT_MSG            = 0x02  
-PKT_HANDSHAKE_RESP = 0x03  
+PKT_HANDSHAKE_RESP = 0x03
+PKT_ACK            = 0x04  
 
 class SecureIMProtocol(asyncio.DatagramProtocol):
     def __init__(self, dnie_manager, db, on_msg_callback):
@@ -38,6 +39,8 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             asyncio.create_task(self.handle_handshake(payload, addr, is_response=True))
         elif msg_type == PKT_MSG:
             self.handle_message(payload, addr)
+        elif msg_type == PKT_ACK:
+            self.handle_ack(payload, addr)
 
     async def handle_handshake(self, payload, addr, is_response):
         try:
@@ -95,10 +98,21 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             nonce = payload[:12]
             ciphertext = payload[12:]
             plaintext = cipher.decrypt(nonce, ciphertext, None)
-            msg = plaintext.decode('utf-8')
+            msg_data = plaintext.decode('utf-8')
+            
+            # Formato: msg_id|texto
+            if '|' in msg_data:
+                msg_id, msg = msg_data.split('|', 1)
+            else:
+                msg_id = None
+                msg = msg_data
             
             if self.callback:
                 self.callback(addr, msg, nombre)
+            
+            # Enviar ACK de vuelta si tiene msg_id
+            if msg_id:
+                self.enviar_ack(addr[0], addr[1], msg_id)
         except: pass
 
     def enviar_handshake(self, ip, port):
@@ -126,9 +140,45 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         try:
             cipher = self.sessions[addr]['cipher']
             nonce = os.urandom(12)
-            ciphertext = cipher.encrypt(nonce, texto.encode('utf-8'), None)
+            # Formato: msg_id|texto
+            msg_data = f"{msg_id}|{texto}" if msg_id else texto
+            ciphertext = cipher.encrypt(nonce, msg_data.encode('utf-8'), None)
             packet = struct.pack("B", PKT_MSG) + self.my_cid + nonce + ciphertext
             self.transport.sendto(packet, addr)
             return True
         except:
             return False
+    
+    def enviar_ack(self, ip, port, msg_id):
+        """Envía ACK de confirmación de entrega"""
+        addr = (ip, port)
+        if addr not in self.sessions:
+            return
+        
+        try:
+            cipher = self.sessions[addr]['cipher']
+            nonce = os.urandom(12)
+            ciphertext = cipher.encrypt(nonce, msg_id.encode('utf-8'), None)
+            packet = struct.pack("B", PKT_ACK) + self.my_cid + nonce + ciphertext
+            self.transport.sendto(packet, addr)
+        except:
+            pass
+    
+    def handle_ack(self, payload, addr):
+        """Maneja ACK recibido y notifica a la GUI"""
+        if addr not in self.sessions: return
+        session = self.sessions[addr]
+        cipher = session['cipher']
+        nombre = session.get('name', 'Unknown')
+        
+        try:
+            nonce = payload[:12]
+            ciphertext = payload[12:]
+            plaintext = cipher.decrypt(nonce, ciphertext, None)
+            msg_id = plaintext.decode('utf-8')
+            
+            # Notificar a la GUI que el mensaje fue entregado
+            if self.callback:
+                self.callback(addr, f"ACK|{msg_id}", nombre)
+        except:
+            pass
