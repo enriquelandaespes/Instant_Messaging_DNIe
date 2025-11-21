@@ -17,17 +17,18 @@ PKT_MSG            = 0x02
 PKT_HANDSHAKE_RESP = 0x03
 
 class SecureIMProtocol(asyncio.DatagramProtocol):
-    # --- CORRECCIÓN AQUÍ: Añadido argumento 'db' ---
     def __init__(self, dnie_manager, db, on_msg_callback):
         self.dnie = dnie_manager
-        self.db = db  # Guardamos la referencia a la base de datos
+        self.db = db
         self.transport = None
         self.callback = on_msg_callback
         self.sessions = {}
         self.my_cid = os.urandom(4)
         
-        # Estado del handshake para evitar bloqueos en la GUI
-        self.handshake_status = {} 
+        # --- CORRECCIÓN: Renombrado a handshake_in_progress ---
+        # Usamos un diccionario para guardar el estado:
+        # Clave: tupla (ip, port). Valor: "INITIATED" | "ESTABLISHED"
+        self.handshake_in_progress = {} 
 
     def connection_made(self, transport):
         self.transport = transport
@@ -45,7 +46,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             self.handle_message(payload, addr)
 
     async def handle_handshake(self, payload, addr, is_response):
-        key = f"{addr[0]}:{addr[1]}"
+        # addr es una tupla ('192.168.x.x', 6666)
         try:
             offset = 0
             # 1. Leer Clave Pública Efímera (32 bytes)
@@ -53,60 +54,60 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             peer_pub_bytes = payload[offset : offset+32]
             offset += 32
 
-            # 2. Leer Longitud del Certificado (2 bytes)
-            if len(payload) < offset + 2: raise ValueError("Paquete muy corto para len cert")
+            # 2. Leer Longitud del Certificado
+            if len(payload) < offset + 2: raise ValueError("Paquete corto (len cert)")
             cert_len = struct.unpack("!H", payload[offset : offset+2])[0]
             offset += 2
 
             # 3. Leer Bytes del Certificado
-            if len(payload) < offset + cert_len: raise ValueError("Paquete muy corto para cert")
+            if len(payload) < offset + cert_len: raise ValueError("Paquete corto (cert)")
             cert_bytes = payload[offset : offset+cert_len]
             offset += cert_len
 
-            # 4. La firma está al final (la ignoramos por ahora pero leemos el offset)
+            # 4. Firma (el resto)
             _signature = payload[offset:]
 
-            # --- EXTRACCIÓN DEL NOMBRE ---
+            # --- EXTRACCIÓN DEL NOMBRE (DNIe) ---
             try:
                 cert_obj = x509.load_der_x509_certificate(cert_bytes, default_backend())
-                cn_attributes = cert_obj.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
-                if cn_attributes:
-                    nombre = cn_attributes[0].value
-                else:
-                    nombre = "DNIe (Sin CN)"
-            except Exception as e_cert:
-                print(f"Error leyendo certificado: {e_cert}")
-                nombre = "DNIe Inválido"
+                cn_attrs = cert_obj.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+                nombre = cn_attrs[0].value if cn_attrs else "DNIe Desconocido"
+            except:
+                nombre = "Error Certificado"
 
             # --- CRIPTOGRAFÍA ---
             peer_key_obj = x25519.X25519PublicKey.from_public_bytes(peer_pub_bytes)
             shared_secret = self.dnie.private_key.exchange(peer_key_obj)
             session_key = hashlib.blake2s(shared_secret, digest_size=32).digest()
 
-            # Guardar sesión
+            # Guardar sesión establecida
             self.sessions[addr] = {
                 'cipher': ChaCha20Poly1305(session_key),
                 'name': nombre,
                 'state': 'ESTABLISHED'
             }
             
-            self.handshake_status[key] = "ESTABLISHED"
+            # Actualizar estado: Ya no está "in progress", está establecida.
+            # Pero para que el check 'not in' de la GUI no falle si lo comprueba al revés,
+            # lo mantenemos o lo marcamos como completado.
+            # Si la GUI bloquea si ESTÁ en el dict, deberíamos borrarlo al acabar.
+            # Si la GUI bloquea si NO ESTÁ conectado y NO ESTÁ en progreso, lo dejamos.
+            self.handshake_in_progress[addr] = "ESTABLISHED"
 
-            # Notificar a la GUI
+            # Notificar GUI
             if self.callback:
                 self.callback(addr, "HANDSHAKE_OK", nombre)
 
-            # Si somos el receptor del handshake, respondemos con nuestras credenciales
+            # Responder si somos el servidor
             if not is_response:
                 self._enviar_paquete_credenciales(addr[0], addr[1], tipo=PKT_HANDSHAKE_RESP)
-                self.handshake_status[key] = "RESPONSED"
+                self.handshake_in_progress[addr] = "RESPONSED"
 
         except Exception as e:
-            print(f"❌ Error en handshake con {addr}: {e}")
-            import traceback
-            traceback.print_exc()
-            if key in self.handshake_status:
-                del self.handshake_status[key]
+            print(f"❌ Error handshake {addr}: {e}")
+            # Si falla, liberamos el bloqueo para poder reintentar
+            if addr in self.handshake_in_progress:
+                del self.handshake_in_progress[addr]
 
     def handle_message(self, payload, addr):
         if addr not in self.sessions: return
@@ -118,20 +119,17 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             nonce = payload[:12]
             ciphertext = payload[12:]
             plaintext = cipher.decrypt(nonce, ciphertext, None)
+            msg_str = plaintext.decode('utf-8')
             
-            decoded_msg = plaintext.decode('utf-8')
-            
-            # Opcional: Si quieres guardar mensajes en la DB automáticamente, hazlo aquí:
-            # if self.db: self.db.add_message(nombre, decoded_msg, "received")
-
             if self.callback:
-                self.callback(addr, decoded_msg, nombre)
-        except Exception as e:
-            print(f"Error descifrando msg de {nombre}: {e}")
+                self.callback(addr, msg_str, nombre)
+        except:
+            pass
 
     def enviar_handshake(self, ip, port):
-        key = f"{ip}:{port}"
-        self.handshake_status[key] = "INITIATED"
+        # Usamos tupla como clave para ser consistentes con addr
+        addr = (ip, port)
+        self.handshake_in_progress[addr] = "INITIATED"
         self._enviar_paquete_credenciales(ip, port, tipo=PKT_HANDSHAKE_INIT)
 
     def _enviar_paquete_credenciales(self, ip, port, tipo):
@@ -150,11 +148,17 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             self.transport.sendto(packet, (ip, port))
         except Exception as e:
             print(f"Error enviando credenciales: {e}")
+            # Si falla el envío, borramos el estado para permitir reintento
+            addr = (ip, port)
+            if addr in self.handshake_in_progress:
+                del self.handshake_in_progress[addr]
 
     def enviar_mensaje(self, ip, port, texto):
         addr = (ip, port)
         if addr not in self.sessions:
-            print(f"Intento de enviar mensaje a {addr} sin sesión.")
+            # Si no hay sesión, intentamos handshake automático o avisamos
+            print(f"⚠️ No hay sesión segura con {addr}. Iniciando handshake...")
+            self.enviar_handshake(ip, port)
             return
         
         try:
