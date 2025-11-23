@@ -1,4 +1,3 @@
-# database.py
 import json
 import os
 import uuid
@@ -15,7 +14,7 @@ class JsonDatabase:
         self.load()
 
     def load(self):
-        """Carga la base de datos del disco."""
+        # Carga la base de datos si ya existe, si no la crea
         if not os.path.exists(self.filepath):
             self.save() # Crear si no existe
             return
@@ -37,7 +36,7 @@ class JsonDatabase:
             self.data = {"contacts": {}}
 
     def save(self):
-        """Guarda los datos en disco."""
+        # Guarda los datos en el archivo JSON(De momento sin cifrar)
         try:
             with open(self.filepath, 'w', encoding='utf-8') as f:
                 json.dump(self.data, f, indent=4, ensure_ascii=False)
@@ -47,15 +46,15 @@ class JsonDatabase:
     # --- MÉTODOS REQUERIDOS POR LA GUI Y PROTOCOLO ---
 
     def get_all_contacts(self):
-        """Devuelve el diccionario completo de contactos."""
+        # Devuelve todos los contactos 
         return self.data.get("contacts", {})
 
     def get_contact_info(self, cn):
-        """Devuelve la info (ip, puerto, estado) de un contacto por su nombre (CN)."""
+        # Devuelve la info (ip, puerto, estado) de un contacto por su nombre (CN).
         return self.data["contacts"].get(cn)
 
     def add_or_update_contact(self, cn, name=None, ip=None, port=None, update_seen=True):
-        """Añade un contacto nuevo o actualiza su IP/Puerto."""
+        # Añade un contacto nuevo o actualiza su IP/Puerto.
         if cn not in self.data["contacts"]:
             self.data["contacts"][cn] = {
                 "name": name or cn,
@@ -73,30 +72,30 @@ class JsonDatabase:
         self.save()
     
     def update_contact_name(self, cn, name):
-        """Actualiza solo el nombre de un contacto."""
+        # Actualiza solo el nombre de un contacto  
         if cn in self.data["contacts"]:
             self.data["contacts"][cn]["name"] = name
             self.save()
 
     def rename_contact(self, old_cn, new_cn):
-        """Cambia el nombre de un contacto (ej: de 'Ruben_6666' a 'RUBEN SANZ')."""
+        # Cambia el nombre de un contacto
         if old_cn in self.data["contacts"] and new_cn not in self.data["contacts"]:
             self.data["contacts"][new_cn] = self.data["contacts"][old_cn]
             del self.data["contacts"][old_cn]
             self.save()
 
     def set_contact_connected(self, cn, is_connected):
-        """Marca si estamos conectados (Handshake OK) con alguien."""
+        # Marca si estamos conectados (Handshake OK) con alguien.
         if cn in self.data["contacts"]:
             self.data["contacts"][cn]["is_connected"] = is_connected
             self.save()
 
     def get_history(self, cn):
-        """Devuelve la lista de mensajes de un contacto."""
+        # Devuelve la lista de mensajes de un contacto
         return self.data["contacts"].get(cn, {}).get("msgs", [])
 
     def add_message(self, cn, sender, text, status='pending', timestamp=None):
-        """Añade un mensaje al historial y devuelve su ID único."""
+        # Añade un mensaje al historial y devuelve su ID único
         if cn not in self.data["contacts"]:
             self.add_or_update_contact(cn)
         
@@ -104,7 +103,7 @@ class JsonDatabase:
         if not timestamp:
             timestamp = now.strftime("%H:%M")
             
-        msg_id = str(uuid.uuid4()) # ID único para gestionar los Ticks
+        msg_id = str(uuid.uuid4()) # ID único para gestionar los Ticks (Visual)
         msg = {
             "id": msg_id,
             "sender": sender,
@@ -120,7 +119,7 @@ class JsonDatabase:
         return msg_id
 
     def mark_message_status(self, cn, msg_id, status):
-        """Actualiza el estado de un mensaje (sent -> delivered)."""
+        # Actualiza el estado de un mensaje
         if cn not in self.data["contacts"]: return
         for msg in self.data["contacts"][cn]["msgs"]:
             if msg.get("id") == msg_id:
@@ -129,18 +128,18 @@ class JsonDatabase:
                 return
 
     def get_pending_messages(self, cn):
-        """Devuelve mensajes que no se pudieron enviar."""
+        # Devuelve mensajes que no se pudieron enviar.
         return [(i, m) for i, m in enumerate(self.get_history(cn)) if m["status"] == "pending"]
     
     def get_unread_count(self, cn, my_nick):
-        """Devuelve el número de mensajes no leídos de un contacto."""
+        # Devuelve el número de mensajes no leídos de un contacto
         if cn not in self.data["contacts"]: return 0
         msgs = self.data["contacts"][cn]["msgs"]
         # Contar mensajes RECIBIDOS (status='received') que no están leídos
         return sum(1 for m in msgs if m.get("status") == "received" and not m.get("read", False))
     
     def mark_messages_as_read(self, cn, my_nick):
-        """Marca todos los mensajes de un contacto como leídos."""
+        # Marca todos los mensajes de un contacto como leídos(Para el doble tick)
         if cn not in self.data["contacts"]: return
         msgs = self.data["contacts"][cn]["msgs"]
         changed = False
@@ -153,7 +152,7 @@ class JsonDatabase:
             self.save()
     
     def mark_message_as_read_by_id(self, cn, msg_id):
-        """Marca un mensaje específico como leído."""
+        # Marca un mensaje específico como leído
         if cn not in self.data["contacts"]: return
         for msg in self.data["contacts"][cn]["msgs"]:
             if msg.get("id") == msg_id:
@@ -162,8 +161,7 @@ class JsonDatabase:
                 return
     
     def check_message_timeouts(self, cn, timeout_seconds=5):
-        """Verifica si hay mensajes 'sent' que no recibieron ACK en el tiempo límite.
-        Retorna True si hay timeouts (indica desconexión)."""
+        # Verifica si hay mensajes 'sent' que no recibieron ACK en el tiempo límite. Retorna True si hay timeouts (indica desconexión).
         if cn not in self.data["contacts"]: 
             return False
         

@@ -8,7 +8,7 @@ import config
 class DNIeManager:
     def __init__(self, pin: str):
         self.pin = pin
-        self.lib_path = config.PKCS11_LIB_PATH
+        self.lib_path = config.PKCS11_LIB_PATH 
         
         # Generar claves efímeras
         self.private_key = x25519.X25519PrivateKey.generate()
@@ -19,17 +19,17 @@ class DNIeManager:
         )
         
         # Intentamos extraer credenciales. Si falla, el error sube (no hacemos sys.exit)
-        self.cert_der, self.firma_cached = self._extraer_credenciales()
+        self.cert_der, self.firma_cached = self.extraer_credenciales()
 
-    def _get_token(self):
+    def get_token(self): # Obtenemos el token
         pkcs11 = pkcs11_lib(self.lib_path)
         slots = pkcs11.get_slots(token_present=True)
         if not slots:
             raise RuntimeError("No se detecta tarjeta DNIe.")
         return slots[config.SLOT_INDEX].get_token()
 
-    def _extraer_credenciales(self):
-        token = self._get_token()
+    def extraer_credenciales(self): # Extraemos credenciales
+        token = self.get_token()
         with token.open(user_pin=self.pin, rw=True) as session:
             certs = list(session.get_objects({Attribute.CLASS: ObjectClass.CERTIFICATE}))
             if not certs: raise RuntimeError("No certificados.")
@@ -37,16 +37,11 @@ class DNIeManager:
 
             keys = list(session.get_objects({Attribute.CLASS: ObjectClass.PRIVATE_KEY}))
             if not keys: raise RuntimeError("No clave privada.")
-            
-            # --- CORRECCIÓN CLAVE: Usamos keys[0] (Autenticación) ---
-            # Tu versión anterior usaba keys[1] (Firma), lo cual hace fallar el handshake
-            priv_key = keys[0]
+
+            priv_key = keys[0] # Usamos la clave de autenticación
             
             firma = priv_key.sign(self.public_bytes, mechanism=Mechanism.SHA256_RSA_PKCS)
             return cert_der, firma
-
-    def obtener_credenciales(self):
-        return self.cert_der, self.firma_cached
 
     def get_user_name(self):
         # Extraer nombre para mostrarlo

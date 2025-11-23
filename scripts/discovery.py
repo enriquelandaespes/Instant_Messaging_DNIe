@@ -1,35 +1,34 @@
 # discovery.py
 import socket
 import asyncio
-import uuid  # <--- ¡ESTA ES LA LÍNEA QUE FALTABA!
+import uuid  
 from zeroconf import ServiceInfo, ServiceStateChange
 from zeroconf.asyncio import AsyncZeroconf, AsyncServiceBrowser, AsyncServiceInfo
 import config
 
 class DiscoveryService:
     def __init__(self, my_port, my_nick, on_peer_found_callback):
-        self.port = my_port
-        self.nick = my_nick
-        self.on_peer = on_peer_found_callback
-        self.azc = None
-        self.browser = None
-        self.my_ip = self.get_lan_ip()
+        self.port = my_port # Puerto que utilizamos 
+        self.nick = my_nick # Nickname que utilizamos(Será el del DNIe)
+        self.on_peer = on_peer_found_callback # Callback para cuando encontramos un peer
+        self.azc = None # AsyncZeroconf
+        self.browser = None # AsyncServiceBrowser
+        self.my_ip = self.get_lan_ip() # Ip que tenemos
         
         # ID único para evitar choques si reinicias rápido el programa
-        unique_id = str(uuid.uuid4())[:8]
-        self.my_name = f"dni-im-{unique_id}.{config.SERVICE_TYPE}"
+        self.unique_id = str(uuid.uuid4())[:8]
+        self.my_name = f"dni-im-{self.unique_id}.{config.SERVICE_TYPE}" # Nombre del servicio(Casi nunca se utiliza)
 
     def get_lan_ip(self):
-        """Detecta la IP real de la LAN para anunciar correctamente."""
+        # Detecta la IP real de la LAN para anunciar correctamente.
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            # No se envía nada, solo se calcula la ruta hacia Google DNS
-            s.connect(('8.8.8.8', 80))
-            ip = s.getsockname()[0]
-            s.close()
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # No se envía nada, solo se calcula la ruta hacia Google DNS
+            s.connect(('8.8.8.8', 80)) # Se conecta a Google DNS
+            ip = s.getsockname()[0] # Obtiene la IP
+            s.close() # Cierra la conexión(Solo se utiliza para obtener la IP)
             return ip
         except Exception:
-            return '127.0.0.1'
+            return '127.0.0.1' # En el caso que no se encuentre es la de localhost
 
     async def start(self):
         print(f"🌐 [mDNS] Iniciando discovery en IP: {self.my_ip}")
@@ -39,7 +38,7 @@ class DiscoveryService:
             self.azc = AsyncZeroconf()
         except Exception as e:
             print(f"⚠️ Error crítico mDNS: {e}")
-            # Intentamos fallback sin argumentos si falla algo raro
+            # Intentamos fallback sin argumentos si falla algo que no controlamos 
             self.azc = AsyncZeroconf()
 
         # Información de nuestro servicio
@@ -53,27 +52,25 @@ class DiscoveryService:
         )
         
         try:
-            await self.azc.async_register_service(info)
+            await self.azc.async_register_service(info) # Registramos el servicio en el DNS
         except Exception as e:
-            print(f"⚠️ [mDNS] Error registro: {e}")
+            print(f"⚠️ [mDNS] Error registro en el servicio DNS: {e}") 
         
-        # Empezamos a escuchar
+        # Empezamos a escuchar para descubrir otros servicios(Otros usuarios del chat)
         self.browser = AsyncServiceBrowser(
-            self.azc.zeroconf, config.SERVICE_TYPE, handlers=[self._on_change]
+            self.azc.zeroconf, config.SERVICE_TYPE, handlers=[self.on_change]
         )
 
-    def _on_change(self, zeroconf, service_type, name, state_change):
-        if state_change is not ServiceStateChange.Added: return
-        if name == self.my_name: return # Ignorarnos a nosotros mismos
-        
+    def on_change(self, zeroconf, service_type, name, state_change):
+        if state_change is not ServiceStateChange.Added: return # Solo nos interesa cuando se añade un servicio
+        if name == self.my_name: return # Ignorarnos a nosotros mismos(No debería ocurrir)
         # Resolvemos el nombre encontrado en segundo plano
-        asyncio.create_task(self._resolve(zeroconf, service_type, name))
+        asyncio.create_task(self.resolve(zeroconf, service_type, name)) # Resolvemos el nombre encontrado en segundo plano
 
-    async def _resolve(self, zeroconf, service_type, name):
+    async def resolve(self, zeroconf, service_type, name):
         try:
-            info = AsyncServiceInfo(service_type, name)
-            # Esperamos hasta 2s para resolver
-            found = await info.async_request(zeroconf, 2000)
+            info = AsyncServiceInfo(service_type, name)     
+            found = await info.async_request(zeroconf, 2000) # Esperamos hasta 2s para resolver
             
             if found and info.addresses:
                 ip = socket.inet_ntoa(info.addresses[0])
