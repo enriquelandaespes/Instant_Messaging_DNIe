@@ -221,9 +221,10 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
     def handle_reconnect(self, payload, addr):
         if addr not in self.sessions:
             return
+        
         session = self.sessions[addr]
         contact_name = session.get('name', 'Unknown')
-        print(f"🔄 {contact_name} se reconectó")
+        print(f"🔄 RECONNECT recibido de {contact_name}")
         
         if not hasattr(self, '_reconnect_responses'):
             self._reconnect_responses = set()
@@ -231,7 +232,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         if addr not in self._reconnect_responses:
             self._reconnect_responses.add(addr)
             self.enviar_reconnect(addr[0], addr[1])
-            asyncio.get_event_loop().call_later(2, lambda: self._reconnect_responses.discard(addr))
+            asyncio.get_event_loop().call_later(3, lambda: self._reconnect_responses.discard(addr))
         
         if self.callback:
             self.callback(addr, "PEER_RECONNECTED", contact_name, None)

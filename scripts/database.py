@@ -71,7 +71,6 @@ class JsonDatabase:
         if cn not in self.data["contacts"]:
             self.add_or_update_contact(cn)
         
-        # Deduplicación por msg_id
         if msg_id:
             for existing_msg in self.data["contacts"][cn]["msgs"]:
                 if existing_msg.get("id") == msg_id:
