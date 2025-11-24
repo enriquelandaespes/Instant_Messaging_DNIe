@@ -198,61 +198,11 @@ class ChatGUI:
         idx = self.contact_keys.index(self.current_cn) if self.current_cn in self.contact_keys else 0
         new_idx = (idx + delta) % len(self.contact_keys)
         self.current_cn = self.contact_keys[new_idx]
-        # Marcar mensajes como leídos al entrar al chat
-        self.db.mark_messages_as_read(self.current_cn, self.my_nick)
-        self.refresh_ui()
-
-    # --- CORRECCIÓN: Renombrado a add_peer para coincidir con main.py ---
-    def add_peer(self, name, ip, port):
-        # Usar IP:Puerto como identificador único
-        contact_id = f"{ip}:{port}"
-        
-        # Verificar si ya existe este IP:Puerto
-        existing = self.db.get_contact_info(contact_id)
-        
-        if existing:
-            # Ya existe, actualizar nombre si cambió
-            if existing.get("name") != name and "dni-im" not in name:
-                self.db.update_contact_name(contact_id, name)
-        else:
-            # Nuevo contacto
-            self.db.add_or_update_contact(contact_id, name=name, ip=ip, port=port)
-            if contact_id not in self.contact_keys:
-                self.contact_keys.append(contact_id)
-                self.contact_keys.sort()
-            if not self.current_cn: self.current_cn = contact_id
-            
-            # Notificar nuevo contacto encontrado
-            ts = datetime.now().strftime("%H:%M")
-            self.db.add_message(contact_id, "Sys", f"Nuevo contacto descubierto: {name}", "system", ts)
-            
-        self.refresh_ui()
-
-    def on_protocol_msg(self, addr, text, real_cn):
-        # Usar IP:Puerto como identificador único
-        contact_id = f"{addr[0]}:{addr[1]}"
         
         if contact_id in self.pending_handshakes: self.pending_handshakes.remove(contact_id)
         
         self.db.add_or_update_contact(contact_id, name=real_cn, ip=addr[0], port=addr[1])
         if contact_id not in self.contact_keys:
-            self.contact_keys.append(contact_id)
-            self.contact_keys.sort()
-
-        ts = datetime.now().strftime("%H:%M")
-        
-        if text == "HANDSHAKE_OK":
-            self.db.set_contact_connected(contact_id, True)
-            self.db.add_message(contact_id, "Sys", "CONEXIÓN SEGURA ESTABLECIDA", "system", ts)
-            self.check_pending_messages(contact_id, addr[0], addr[1])
-        elif text == "SESSION_RESTORED":
-            self.db.set_contact_connected(contact_id, True)
-            self.db.add_message(contact_id, "Sys", "Sesión restaurada (sin handshake)", "system", ts)
-            self.check_pending_messages(contact_id, addr[0], addr[1])
-        elif text.startswith("HANDSHAKE_ERROR"):
-            self.db.set_contact_connected(contact_id, False)
-            self.db.add_message(contact_id, "Sys", f"ERROR: {text}", "error", ts)
-        elif text == "ERROR_DESCIFRADO":
             self.db.add_message(contact_id, "Sys", "Error cifrado.", "error", ts)
         elif text.startswith("ACK|"):
             # ACK recibido, actualizar mensaje a "delivered" (doble tick)
@@ -267,34 +217,6 @@ class ChatGUI:
                 self.db.mark_message_as_read_by_id(contact_id, msg_id)
             
         self.refresh_ui()
-
-    def on_ack_received(self, cn, msg_id):
-        self.db.mark_message_status(cn, msg_id, "delivered")
-        self.app.invalidate()
-
-    def check_pending_messages(self, cn, ip, port):
-        """Envía todos los mensajes pendientes en cola cuando se reconecta"""
-        pending = self.db.get_pending_messages(cn)
-        if not pending: 
-            return
-        
-        # Agregar mensaje de debug
-        ts = datetime.now().strftime("%H:%M")
-        self.db.add_message(cn, "Sys", f"Enviando {len(pending)} mensaje(s) pendiente(s)...", "system", ts)
-        
-        for i, msg in pending:
-            if self.protocol.enviar_mensaje(ip, port, msg["text"], msg["id"]):
-                self.db.mark_message_status(cn, msg["id"], "sent")
-            else:
-                # Si falla, mantener como pending
-                self.db.add_message(cn, "Sys", f"Error al reenviar mensaje: {msg['text'][:30]}...", "error", ts)
-        
-        self.refresh_ui()
-
-    async def handle_enter(self):
-        if not self.current_cn: return
-        text = self.w_input.text.strip()
-        
         info = self.db.get_contact_info(self.current_cn)
         if not info: return 
         ip, port = info.get("ip"), info.get("port")

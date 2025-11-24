@@ -75,24 +75,6 @@ class JsonDatabase:
         
         self.save()
     
-    def update_contact_name(self, cn, name):
-        # Actualiza solo el nombre de un contacto  
-        if cn in self.data["contacts"]:
-            self.data["contacts"][cn]["name"] = name
-            self.save()
-
-    def rename_contact(self, old_cn, new_cn):
-        # Cambia el nombre de un contacto
-        if old_cn in self.data["contacts"] and new_cn not in self.data["contacts"]:
-            self.data["contacts"][new_cn] = self.data["contacts"][old_cn]
-            del self.data["contacts"][old_cn]
-            self.save()
-
-    def set_contact_connected(self, cn, is_connected):
-        # Marca si estamos conectados (Handshake OK) con alguien.
-        if cn in self.data["contacts"]:
-            self.data["contacts"][cn]["is_connected"] = is_connected
-            self.save()
 
     def get_history(self, cn):
         # Devuelve la lista de mensajes de un contacto
