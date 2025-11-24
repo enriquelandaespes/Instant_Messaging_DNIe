@@ -230,6 +230,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             self.callback(addr, "PEER_RECONNECTED", contact_name, None)
 
 
+
     def enviar_reconnect(self, ip, port):
         if not self.transport:
             return False

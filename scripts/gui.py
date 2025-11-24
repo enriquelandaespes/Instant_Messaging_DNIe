@@ -156,6 +156,8 @@ class ChatGUI:
                     tick = "✓✓"
                 elif status == 'sent':
                     tick = "✓"
+                elif status == 'pending':
+                    tick = "🕒"
                 else:
                     tick = "🕒"
                 time_and_tick = f"{formatted_time} {tick}"
@@ -373,16 +375,14 @@ class ChatGUI:
             if not ip or not port:
                 continue
             
-            # CLAVE: Marcar como desconectado ANTES de simular Enter
-            self.db.set_contact_connected(cn, False)
-            
-            # Simular Enter
+            # Simular Enter (VERSIÓN ORIGINAL QUE FUNCIONABA)
             original_cn = self.current_cn
             self.current_cn = cn
             await self.handle_enter()
             self.current_cn = original_cn
         
         self.refresh_ui()
+
 
 
 
