@@ -141,9 +141,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         addr = (ip, port)
         if addr in self.sessions:
             print(f"Sesión existente con {addr}, saltando handshake.")
-            if self.callback:
-                nombre = self.sessions[addr].get('name', 'Unknown')
-                self.callback(addr, "HANDSHAKE_OK", nombre)
+            # NO llamamos al callback para evitar mostrar "CONEXIÓN SEGURA ESTABLECIDA"
             return
 
         self._enviar_paquete_credenciales(ip, port, tipo=PKT_HANDSHAKE_INIT)
