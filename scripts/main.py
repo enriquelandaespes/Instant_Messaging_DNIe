@@ -44,10 +44,8 @@ async def main():
         print(f"Error al leer DNIe: {e}")
         sys.exit(1)
 
-    def protocol_callback(addr, text, nombre, msg_id=None):
-        gui.on_protocol_msg(addr, text, nombre, msg_id)
-
-
+    def protocol_callback(addr, text, nombre):
+        gui.on_protocol_msg(addr, text, nombre)
 
     protocol = SecureIMProtocol(dnie, db, protocol_callback)
     
@@ -57,13 +55,7 @@ async def main():
     transport, _ = await loop.create_datagram_endpoint(
         lambda: protocol, local_addr=('0.0.0.0', port)
     )
-    
     protocol.transport = transport 
-    # NUEVO: Esperar un momento para que restaurar_sesiones_guardadas termine
-    await asyncio.sleep(0.5)
-
-    # NUEVO: Ahora SÍ intentar auto-conectar y enviar pendientes
-    await gui._auto_connect_and_send_pending()
     
     def discovery_callback(name, ip, p):
         # Filtrado inteligente: Solo notificar a GUI si hay cambios reales

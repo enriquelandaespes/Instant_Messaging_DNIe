@@ -46,6 +46,8 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             self.handle_ack(payload, addr)
         elif msg_type == PKT_RECONNECT:
             self.handle_reconnect(payload, addr)
+        elif msg_type == PKT_RECONNECT:
+            self.handle_reconnect(payload, addr)
 
     async def handle_handshake(self, payload, addr, is_response):
         try:
@@ -96,7 +98,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             )
             
             if self.callback:
-                self.callback(addr, "HANDSHAKE_OK", nombre, None)
+                self.callback(addr, "HANDSHAKE_OK", nombre)
 
             if not is_response:
                 self._enviar_paquete_credenciales(addr[0], addr[1], tipo=PKT_HANDSHAKE_RESP)
@@ -123,14 +125,12 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 msg = msg_data
             
             if self.callback:
-                # CAMBIO: Pasar msg_id junto con el mensaje
-                # Formato nuevo del callback: (addr, mensaje_o_comando, nombre, msg_id)
-                self.callback(addr, msg, nombre, msg_id)
-            if not is_response:
-                self._enviar_paquete_credenciales(addr[0], addr[1], tipo=PKT_HANDSHAKE_RESP)
-    
-        except Exception as e:
-            print(f"Handshake Error: {e}")
+                self.callback(addr, msg, nombre)
+            
+            # Enviar ACK de vuelta si tiene msg_id
+            if msg_id:
+                self.enviar_ack(addr[0], addr[1], msg_id)
+        except: pass
 
     def enviar_handshake(self, ip, port, cn=None):
         """Envía handshake solo si no hay clave guardada"""
@@ -154,7 +154,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                     # Marcar como conectado
                     self.db.set_contact_connected(cn, True)
                     if self.callback:
-                        self.callback(addr, "SESSION_RESTORED", cn, None)
+                        self.callback(addr, "SESSION_RESTORED", cn)
                     return True
                 except Exception as e:
                     print(f"Error crítico restaurando sesión: {e}")
@@ -236,7 +236,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             
             # Notificar a la GUI que el mensaje fue entregado
             if self.callback:
-                self.callback(addr, f"ACK|{msg_id}", nombre, msg_id)
+                self.callback(addr, f"ACK|{msg_id}", nombre)
         except:
             pass
     
@@ -249,13 +249,20 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         contact_name = session.get('name', 'Unknown')
         contact_id = f"{addr[0]}:{addr[1]}"
         
+        # Verificar si el paquete requiere respuesta (primer byte del payload)
+        needs_response = len(payload) > 0 and payload[0] == 1
+        
         print(f"🔄 {contact_name} se ha reconectado")
+        
+        # Solo responder si el paquete lo solicita (evitar bucle infinito)
+        if needs_response:
+            self.enviar_reconnect(addr[0], addr[1], needs_response=False)
         
         # Notificar a la GUI que el contacto está online
         if self.callback:
-            self.callback(addr, "PEER_RECONNECTED", contact_id, None)
+            self.callback(addr, "PEER_RECONNECTED", contact_id)
     
-    def enviar_reconnect(self, ip, port):
+    def enviar_reconnect(self, ip, port, needs_response=True):
         """Envía notificación de reconexión a un peer con sesión guardada"""
         if not self.transport:
             return False
@@ -265,8 +272,9 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             return False
         
         try:
-            # Paquete simple: solo tipo + CID
-            packet = struct.pack("B", PKT_RECONNECT) + self.my_cid
+            # Paquete: tipo + CID + flag (1=requiere respuesta, 0=es respuesta)
+            flag = b'\x01' if needs_response else b'\x00'
+            packet = struct.pack("B", PKT_RECONNECT) + self.my_cid + flag
             self.transport.sendto(packet, addr)
             return True
         except Exception as e:
@@ -280,20 +288,20 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             for cn, info in contacts.items():
                 session_key_hex = info.get("session_key")
                 ip = info.get("ip")
-            port = info.get("port")
-            name = info.get("name", cn)
-            
-            if session_key_hex and ip and port:
-                try:
-                    session_key = bytes.fromhex(session_key_hex)
-                    addr = (ip, port)
-                    self.sessions[addr] = {
-                        'cipher': ChaCha20Poly1305(session_key),
-                        'name': name,
-                        'state': 'ESTABLISHED'
-                    }
-                    print(f"✓ Sesión restaurada con {name} ({ip}:{port})")
-                except Exception as e:
-                    print(f"✗ Error restaurando sesión con {name}: {e}")
+                port = info.get("port")
+                name = info.get("name", cn)
+                
+                if session_key_hex and ip and port:
+                    try:
+                        session_key = bytes.fromhex(session_key_hex)
+                        addr = (ip, port)
+                        self.sessions[addr] = {
+                            'cipher': ChaCha20Poly1305(session_key),
+                            'name': name,
+                            'state': 'ESTABLISHED'
+                        }
+                        print(f"✓ Sesión restaurada con {name} ({ip}:{port})")
+                    except Exception as e:
+                        print(f"✗ Error restaurando sesión con {name}: {e}")
         except Exception as e:
             print(f"Error al restaurar sesiones: {e}")
