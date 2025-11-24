@@ -214,51 +214,47 @@ class JsonDatabase:
         return None
 
     def _clean_duplicates(self):
-        """Elimina contactos duplicados que tengan el mismo nombre o IP:Puerto"""
+        """Elimina contactos duplicados que tengan el mismo nombre"""
         contacts_to_remove = []
-        seen_ips = {}  # {(ip, port): cn}
-        seen_names = {}  # {name: cn}
+        contacts_by_name = {}  # {name: [cn1, cn2, ...]}
         
+        # Agrupar contactos por nombre
         for cn, info in list(self.data["contacts"].items()):
-            ip = info.get("ip")
-            port = info.get("port")
             name = info.get("name")
-            
-            # Verificar duplicado por IP:Puerto
-            if ip and port:
-                key = (ip, port)
-                if key in seen_ips:
-                    # Duplicado encontrado - mantener el que tenga más mensajes
-                    existing_cn = seen_ips[key]
-                    existing_msgs = len(self.data["contacts"][existing_cn].get("msgs", []))
-                    current_msgs = len(info.get("msgs", []))
-                    
-                    if current_msgs > existing_msgs:
-                        # Eliminar el viejo, mantener el actual
-                        contacts_to_remove.append(existing_cn)
-                        seen_ips[key] = cn
-                        if name:
-                            seen_names[name] = cn
-                    else:
-                        # Mantener el viejo, eliminar el actual
+            if name:
+                if name not in contacts_by_name:
+                    contacts_by_name[name] = []
+                contacts_by_name[name].append(cn)
+        
+        # Para cada nombre que tenga duplicados
+        for name, contact_ids in contacts_by_name.items():
+            if len(contact_ids) > 1:
+                # Encontrar el que tiene más mensajes
+                best_cn = None
+                max_msgs = -1
+                
+                for cn in contact_ids:
+                    msgs_count = len(self.data["contacts"][cn].get("msgs", []))
+                    if msgs_count > max_msgs:
+                        max_msgs = msgs_count
+                        best_cn = cn
+                
+                # Si todos tienen 0 mensajes, mantener el que sea IP:Puerto
+                if max_msgs == 0:
+                    for cn in contact_ids:
+                        if ":" in cn:  # Es formato IP:Puerto
+                            best_cn = cn
+                            break
+                
+                # Eliminar los demás
+                for cn in contact_ids:
+                    if cn != best_cn:
                         contacts_to_remove.append(cn)
-                else:
-                    seen_ips[key] = cn
-                    if name:
-                        seen_names[name] = cn
-            elif name:
-                # Solo nombre, verificar duplicado por nombre
-                if name in seen_names:
-                    existing_cn = seen_names[name]
-                    if cn != existing_cn:
-                        contacts_to_remove.append(cn)
-                else:
-                    seen_names[name] = cn
+                        print(f"Eliminando contacto duplicado: {cn} (manteniendo {best_cn})")
         
         # Eliminar duplicados
         for cn in contacts_to_remove:
             if cn in self.data["contacts"]:
-                print(f"Eliminando contacto duplicado: {cn}")
                 del self.data["contacts"][cn]
         
         if contacts_to_remove:
