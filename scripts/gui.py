@@ -110,7 +110,6 @@ class ChatGUI:
         if self.contact_keys and self.current_cn is None:
             self.current_cn = self.contact_keys[0]
         self.refresh_ui()
-        
         # Programar auto-conexión después de que la interfaz esté lista
         asyncio.create_task(self._auto_connect_saved_contacts())
 
@@ -339,10 +338,9 @@ class ChatGUI:
             self.contact_keys.sort()
 
         ts = datetime.now().strftime("%H:%M")
-        
+    
         if text == "HANDSHAKE_OK":
             self.db.set_contact_connected(contact_id, True)
-            # Añadir mensaje de conexión segura solo si es la primera vez (no tiene mensajes de chat)
             msgs = self.db.get_history(contact_id)
             user_msgs = [m for m in msgs if m.get('sender') != "Sys"]
             if len(user_msgs) == 0:
@@ -356,13 +354,16 @@ class ChatGUI:
         elif text == "ERROR_DESCIFRADO":
             pass
         elif text.startswith("ACK|"):
-            msg_id = text.split('|', 1)[1]
-            self.db.mark_message_status(contact_id, msg_id, "delivered")
+            ack_msg_id = text.split('|', 1)[1]
+            self.db.mark_message_status(contact_id, ack_msg_id, "delivered")
         else:
+            # MENSAJE NORMAL RECIBIDO - USAR msg_id PARA DEDUPLICAR
             self.db.set_contact_connected(contact_id, True)
-            msg_id = self.db.add_message(contact_id, real_cn, text, "received", ts)
+            received_msg_id = self.db.add_message(contact_id, real_cn, text, "received", ts, msg_id=msg_id)
+            
             if self.current_cn == contact_id:
-                self.db.mark_message_as_read_by_id(contact_id, msg_id)
+                self.db.mark_message_as_read_by_id(contact_id, received_msg_id)
+        
         self.refresh_ui()
 
     def check_pending_messages(self, cn, ip, port):
@@ -443,35 +444,28 @@ class ChatGUI:
             else:
                 break  # Si falla, salir
         self.refresh_ui()
-    async def _auto_connect_saved_contacts(self):
-        """Intenta conectar automáticamente con todos los contactos que tienen sesión guardada"""
-        # Esperar un momento a que la interfaz esté lista
-        await asyncio.sleep(1)
-        
+    async def _auto_connect_and_send_pending(self):
+        """Conecta y envía mensajes pendientes a todos los contactos con sesión restaurada"""
         all_contacts = self.db.get_all_contacts()
         for cn, info in all_contacts.items():
             ip = info.get("ip")
             port = info.get("port")
-            
-            # Solo intentar conectar si tiene IP y puerto
-            if not ip or not port:
-                continue
-            
-            session_key = self.db.get_session_key(cn)
-            
-            # Si tiene sesión guardada, conectar automáticamente
-            if session_key and self.protocol.tiene_sesion(ip, port):
-                # Marcar como conectado (la sesión ya se restauró)
-                self.db.set_contact_connected(cn, True)
-                
-                # Enviar mensaje de prueba silencioso para verificar conectividad
-                # (esto dispara ACK si el otro está online)
-                pending = self.db.get_pending_messages(cn)
-                if pending:
-                    print(f"📤 Enviando {len(pending)} mensaje(s) pendiente(s) a {info.get('name', cn)}")
-                    self.check_pending_messages(cn, ip, port)
         
+        if not ip or not port:
+            continue
+        
+        # Verificar si el protocolo YA tiene la sesión restaurada
+        if self.protocol.tiene_sesion(ip, port):
+            self.db.set_contact_connected(cn, True)
+            
+            pending = self.db.get_pending_messages(cn)
+            if pending:
+                print(f"📤 Auto-enviando {len(pending)} mensaje(s) pendiente(s) a {info.get('name', cn)}")
+                self.check_pending_messages(cn, ip, port)
+    
         self.refresh_ui()
+
+
     
     async def _clear_pending_handshake(self, cn, delay=8):
         """Limpia el flag de handshake pendiente después de un delay"""
@@ -592,3 +586,4 @@ class ChatGUI:
                     await self._retry_task
                 except asyncio.CancelledError:
                     pass
+ 
