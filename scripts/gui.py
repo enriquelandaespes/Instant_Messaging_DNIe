@@ -6,7 +6,7 @@ from prompt_toolkit.widgets import TextArea, Frame
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import ScrollablePane
-
+yes_pending=False
 class ChatGUI:
     def __init__(self, protocol, my_nick, db):
         self.protocol = protocol
@@ -111,8 +111,8 @@ class ChatGUI:
             port = self.current_cn.split(":")[1]
             display_name = f"{display_name} [:{port}]"
         return f"Chat con {display_name} [{status}]"
-
     def _get_chat_content(self):
+        
         if not self.current_cn:
             return "Esperando contactos..."
         msgs = list(self.db.get_history(self.current_cn))
@@ -154,10 +154,12 @@ class ChatGUI:
             else:
                 if status == 'delivered':
                     tick = "✓✓"
-                elif status == 'sent':
+                    yes_pending=False
+                elif status == 'sent' and not yes_pending:
                     tick = "✓"
                 elif status == 'pending':
                     tick = "🕒"
+                    yes_pending=True
                 else:
                     tick = "🕒"
                 time_and_tick = f"{formatted_time} {tick}"
