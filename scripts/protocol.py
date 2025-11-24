@@ -32,9 +32,11 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             self.callback(None, "SESSIONS_READY", "System", None)
 
     def datagram_received(self, data, addr):
-        if len(data) < 5: return
+        if len(data) < 5:
+            return
         msg_type = data[0]
         payload = data[5:]
+        
         if msg_type == PKT_HANDSHAKE_INIT:
             asyncio.create_task(self.handle_handshake(payload, addr, is_response=False))
         elif msg_type == PKT_HANDSHAKE_RESP:
@@ -49,13 +51,17 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
     async def handle_handshake(self, payload, addr, is_response):
         try:
             offset = 0
-            if len(payload) < 32: return
-            peer_pub_bytes = payload[offset : offset+32]
+            if len(payload) < 32:
+                return
+            peer_pub_bytes = payload[offset:offset+32]
             offset += 32
-            cert_len = struct.unpack("!H", payload[offset : offset+2])[0]
+            
+            cert_len = struct.unpack("!H", payload[offset:offset+2])[0]
             offset += 2
-            cert_bytes = payload[offset : offset+cert_len]
+            
+            cert_bytes = payload[offset:offset+cert_len]
             offset += cert_len
+            
             try:
                 cert_obj = x509.load_der_x509_certificate(cert_bytes, default_backend())
                 cn_attrs = cert_obj.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
@@ -66,14 +72,17 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                     nombre = "DNIe Desconocido"
             except:
                 nombre = "Error Certificado"
+            
             peer_key_obj = x25519.X25519PublicKey.from_public_bytes(peer_pub_bytes)
             shared_secret = self.dnie.private_key.exchange(peer_key_obj)
             session_key = hashlib.blake2s(shared_secret, digest_size=32).digest()
+            
             self.sessions[addr] = {
                 'cipher': ChaCha20Poly1305(session_key),
                 'name': nombre,
                 'state': 'ESTABLISHED'
             }
+            
             self.db.add_or_update_contact(
                 nombre,
                 name=nombre,
@@ -82,15 +91,19 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 session_key=session_key.hex(),
                 peer_cert=cert_bytes.hex()
             )
+            
             if self.callback:
                 self.callback(addr, "HANDSHAKE_OK", nombre, None)
+            
             if not is_response:
                 self._enviar_paquete_credenciales(addr[0], addr[1], tipo=PKT_HANDSHAKE_RESP)
+                
         except Exception as e:
             print(f"Handshake Error: {e}")
 
     def handle_message(self, payload, addr):
-        if addr not in self.sessions: return
+        if addr not in self.sessions:
+            return
         session = self.sessions[addr]
         cipher = session['cipher']
         nombre = session.get('name', 'Unknown')
@@ -99,21 +112,26 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             ciphertext = payload[12:]
             plaintext = cipher.decrypt(nonce, ciphertext, None)
             msg_data = plaintext.decode('utf-8')
+            
             if '|' in msg_data:
                 msg_id, msg = msg_data.split('|', 1)
             else:
                 msg_id = None
                 msg = msg_data
+            
             if self.callback:
                 self.callback(addr, msg, nombre, msg_id)
+            
             if msg_id:
                 self.enviar_ack(addr[0], addr[1], msg_id)
-        except: pass
+        except:
+            pass
 
     def enviar_handshake(self, ip, port, cn=None):
         addr = (ip, port)
         if addr in self.sessions:
             return True
+        
         if cn:
             saved_key = self.db.get_session_key(cn)
             if saved_key:
@@ -128,8 +146,9 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                         self.callback(addr, "SESSION_RESTORED", cn, None)
                     return True
                 except Exception as e:
-                    print(f"Error crítico restaurando sesión: {e}")
+                    print(f"Error restaurando sesión: {e}")
                     return False
+        
         self._enviar_paquete_credenciales(ip, port, tipo=PKT_HANDSHAKE_INIT)
         return False
 
@@ -143,7 +162,8 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         return addr in self.sessions
 
     def _enviar_paquete_credenciales(self, ip, port, tipo):
-        if not self.transport: return
+        if not self.transport:
+            return
         try:
             cert, firma = self.dnie.obtener_credenciales()
             packet = (
@@ -183,7 +203,8 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             pass
 
     def handle_ack(self, payload, addr):
-        if addr not in self.sessions: return
+        if addr not in self.sessions:
+            return
         session = self.sessions[addr]
         cipher = session['cipher']
         nombre = session.get('name', 'Unknown')
@@ -202,13 +223,16 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             return
         session = self.sessions[addr]
         contact_name = session.get('name', 'Unknown')
-        print(f"🔄 {contact_name} ({addr[0]}:{addr[1]}) se ha reconectado")
+        print(f"🔄 {contact_name} se reconectó")
+        
         if not hasattr(self, '_reconnect_responses'):
             self._reconnect_responses = set()
+        
         if addr not in self._reconnect_responses:
             self._reconnect_responses.add(addr)
             self.enviar_reconnect(addr[0], addr[1])
             asyncio.get_event_loop().call_later(2, lambda: self._reconnect_responses.discard(addr))
+        
         if self.callback:
             self.callback(addr, "PEER_RECONNECTED", contact_name, None)
 
@@ -234,6 +258,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 ip = info.get("ip")
                 port = info.get("port")
                 name = info.get("name", cn)
+                
                 if session_key_hex and ip and port:
                     try:
                         session_key = bytes.fromhex(session_key_hex)
@@ -243,8 +268,8 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                             'name': name,
                             'state': 'ESTABLISHED'
                         }
-                        print(f"✓ Sesión restaurada con {name} ({ip}:{port})")
+                        print(f"✓ Sesión restaurada: {name} ({ip}:{port})")
                     except Exception as e:
-                        print(f"✗ Error restaurando sesión con {name}: {e}")
+                        print(f"✗ Error restaurando {name}: {e}")
         except Exception as e:
             print(f"Error al restaurar sesiones: {e}")
