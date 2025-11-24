@@ -366,22 +366,34 @@ class ChatGUI:
         for cn, info in all_contacts.items():
             ip = info.get("ip")
             port = info.get("port")
+            session_key_hex = info.get("session_key")
             
-            if not ip or not port:
+            if not ip or not port or not session_key_hex:
                 continue
             
-            # TRUCO: Simular que presionamos Enter en este contacto
-            # Guardamos el contacto actual
-            original_cn = self.current_cn
-            
-            # Cambiamos temporalmente al contacto para "simular" que estamos ahí
-            self.current_cn = cn
-            
-            # Llamamos a handle_enter() que hace todo el trabajo
-            await self.handle_enter()
-            
-            # Restauramos el contacto original
-            self.current_cn = original_cn
+            try:
+                from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+                session_key = bytes.fromhex(session_key_hex)
+                addr = (ip, port)
+                
+                # FORZAR restauración de sesión SIEMPRE (incluso si ya existe)
+                self.protocol.sessions[addr] = {
+                    'cipher': ChaCha20Poly1305(session_key),
+                    'name': info.get('name', cn),
+                    'state': 'ESTABLISHED'
+                }
+                
+                self.db.set_contact_connected(cn, True)
+                
+                # Enviar RECONNECT SIEMPRE
+                self.protocol.enviar_reconnect(ip, port)
+                
+                # Enviar pendientes si los hay
+                pending = self.db.get_pending_messages(cn)
+                if pending:
+                    self.check_pending_messages(cn, ip, port)
+            except Exception:
+                pass
         
         self.refresh_ui()
 

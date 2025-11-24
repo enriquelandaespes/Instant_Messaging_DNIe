@@ -224,16 +224,13 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         session = self.sessions[addr]
         contact_name = session.get('name', 'Unknown')
         
-        if not hasattr(self, '_reconnect_responses'):
-            self._reconnect_responses = set()
+        # SIEMPRE responder con RECONNECT (sin verificar si ya respondimos)
+        self.enviar_reconnect(addr[0], addr[1])
         
-        if addr not in self._reconnect_responses:
-            self._reconnect_responses.add(addr)
-            self.enviar_reconnect(addr[0], addr[1])
-            asyncio.get_event_loop().call_later(3, lambda: self._reconnect_responses.discard(addr))
-        
+        # SIEMPRE notificar a la GUI para que revise pendientes
         if self.callback:
             self.callback(addr, "PEER_RECONNECTED", contact_name, None)
+
 
     def enviar_reconnect(self, ip, port):
         if not self.transport:
