@@ -370,11 +370,39 @@ class ChatGUI:
             if not ip or not port:
                 continue
             
-            # Simular Enter en cada contacto (ESTO FUNCIONABA)
-            original_cn = self.current_cn
-            self.current_cn = cn
-            await self.handle_enter()
-            self.current_cn = original_cn
+            # Si NO tenemos sesión activa, intentar restaurar desde DB
+            if not self.protocol.tiene_sesion(ip, port):
+                session_key = self.db.get_session_key(cn)
+                if session_key:
+                    try:
+                        from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+                        addr = (ip, port)
+                        self.protocol.sessions[addr] = {
+                            'cipher': ChaCha20Poly1305(session_key),
+                            'name': info.get('name', cn),
+                            'state': 'ESTABLISHED'
+                        }
+                    except Exception:
+                        continue
+            
+            # Ahora que tenemos sesión (restaurada o existente), enviar RECONNECT
+            if self.protocol.tiene_sesion(ip, port):
+                self.db.set_contact_connected(cn, True)
+                self.protocol.enviar_reconnect(ip, port)
+                
+                # Esperar un poco para que el RECONNECT llegue
+                await asyncio.sleep(0.1)
+                
+                # Enviar mensajes pendientes si los hay
+                pending = self.db.get_pending_messages(cn)
+                if pending:
+                    for msg in pending:
+                        if self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id']):
+                            self.db.mark_message_status(cn, msg['id'], "sent")
+                        else:
+                            break
+                        # Pequeña pausa entre mensajes para no saturar
+                        await asyncio.sleep(0.05)
         
         self.refresh_ui()
 
