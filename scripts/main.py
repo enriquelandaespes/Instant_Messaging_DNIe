@@ -12,7 +12,7 @@ from dnie_manager import DNIeManager
 from protocol import SecureIMProtocol
 from discovery import DiscoveryService
 from gui import ChatGUI
-from database import JsonDatabase  # Importamos la DB
+from database import JsonDatabase
 
 async def main():
     port = config.UDP_PORT
@@ -35,7 +35,6 @@ async def main():
         cn_attrs = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
         if cn_attrs:
             raw = cn_attrs[0].value
-            # Limpieza completa
             my_nick = raw.replace("(AUTENTICACIÓN)", "").replace("(Autenticación)", "").replace("(FIRMA)", "").strip()
         else:
             my_nick = "Usuario Desconocido"
@@ -44,12 +43,11 @@ async def main():
         print(f"Error al leer DNIe: {e}")
         sys.exit(1)
 
-    def protocol_callback(addr, text, nombre):
-        gui.on_protocol_msg(addr, text, nombre)
+    def protocol_callback(addr, text, nombre, msg_id=None):
+        gui.on_protocol_msg(addr, text, nombre, msg_id)
 
     protocol = SecureIMProtocol(dnie, db, protocol_callback)
     
-    # Pasamos la DB a la GUI
     gui = ChatGUI(protocol, my_nick, db)
     
     transport, _ = await loop.create_datagram_endpoint(
@@ -58,19 +56,13 @@ async def main():
     protocol.transport = transport 
     
     def discovery_callback(name, ip, p):
-        # Filtrado inteligente: Solo notificar a GUI si hay cambios reales
         contact_id = f"{ip}:{p}"
         existing = db.get_contact_info(contact_id)
         
         if existing:
-            # Si el ID (IP:Port) ya existe y el nombre es igual, IGNORAR.
-            # Esto evita refrescos innecesarios de la UI.
             if existing.get("name") == name:
                 return
-            # Si el nombre cambió, dejamos pasar para que add_peer actualice
         
-        # Si no existe por ID, podría existir por nombre (cambio de puerto) -> add_peer lo maneja
-        # Si es totalmente nuevo -> add_peer lo maneja
         gui.add_peer(name, ip, p)
         
     mdns = DiscoveryService(port, my_nick, discovery_callback)

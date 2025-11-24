@@ -13,8 +13,8 @@ import config
 PKT_HANDSHAKE_INIT = 0x01  
 PKT_MSG            = 0x02  
 PKT_HANDSHAKE_RESP = 0x03
-PKT_ACK            = 0x04
-PKT_RECONNECT      = 0x05  # Notificar reconexión con sesión guardada
+PKT_ACK            = 0x04  
+PKT_RECONNECT      = 0x05
 
 class SecureIMProtocol(asyncio.DatagramProtocol):
     def __init__(self, dnie_manager, db, on_msg_callback):
@@ -30,6 +30,10 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         self.transport = transport
         # Restaurar sesiones guardadas al inicio
         self.restaurar_sesiones_guardadas()
+        
+        # ✨ NUEVO: Notificar que las sesiones están listas
+        if self.callback:
+            self.callback(None, "SESSIONS_READY", "System", None)
 
     def datagram_received(self, data, addr):
         if len(data) < 5: return
@@ -44,8 +48,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             self.handle_message(payload, addr)
         elif msg_type == PKT_ACK:
             self.handle_ack(payload, addr)
-        elif msg_type == PKT_RECONNECT:
-            self.handle_reconnect(payload, addr)
         elif msg_type == PKT_RECONNECT:
             self.handle_reconnect(payload, addr)
 
@@ -70,7 +72,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 cn_attrs = cert_obj.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
                 if cn_attrs:
                     raw = cn_attrs[0].value
-                    # Limpieza insensible a mayúsculas/minúsculas
                     nombre = raw.replace("(AUTENTICACIÓN)", "").replace("(Autenticación)", "").replace("(FIRMA)", "").replace("(Firma)", "").strip()
                 else:
                     nombre = "DNIe Desconocido"
@@ -87,7 +88,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 'state': 'ESTABLISHED'
             }
             
-            # Guardar la clave de sesión y certificado en la DB para uso futuro
+            # Guardar la clave de sesión y certificado en la DB
             self.db.add_or_update_contact(
                 nombre, 
                 name=nombre,
@@ -98,7 +99,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             )
             
             if self.callback:
-                self.callback(addr, "HANDSHAKE_OK", nombre)
+                self.callback(addr, "HANDSHAKE_OK", nombre, None)  # ✅ 4 argumentos
 
             if not is_response:
                 self._enviar_paquete_credenciales(addr[0], addr[1], tipo=PKT_HANDSHAKE_RESP)
@@ -125,7 +126,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 msg = msg_data
             
             if self.callback:
-                self.callback(addr, msg, nombre)
+                self.callback(addr, msg, nombre, msg_id)  # ✅ 4 argumentos
             
             # Enviar ACK de vuelta si tiene msg_id
             if msg_id:
@@ -136,43 +137,35 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         """Envía handshake solo si no hay clave guardada"""
         addr = (ip, port)
         
-        # Si ya tenemos sesión activa, no hacer nada
         if addr in self.sessions:
             return True
         
-        # Si tenemos CN, verificar si hay clave guardada en DB
         if cn:
             saved_key = self.db.get_session_key(cn)
             if saved_key:
-                # Restaurar sesión desde DB sin hacer handshake
                 try:
                     self.sessions[addr] = {
                         'cipher': ChaCha20Poly1305(saved_key),
                         'name': cn,
                         'state': 'ESTABLISHED'
                     }
-                    # Marcar como conectado
                     self.db.set_contact_connected(cn, True)
                     if self.callback:
-                        self.callback(addr, "SESSION_RESTORED", cn)
+                        self.callback(addr, "SESSION_RESTORED", cn, None)  # ✅ 4 argumentos
                     return True
                 except Exception as e:
                     print(f"Error crítico restaurando sesión: {e}")
-                    # SEGURIDAD: Si falla la restauración, NO hacer handshake.
                     return False
         
-        # No hay clave guardada - hacer handshake normal
         self._enviar_paquete_credenciales(ip, port, tipo=PKT_HANDSHAKE_INIT)
         return False
     
     def cerrar_sesion(self, ip, port):
-        """Cierra una sesión existente"""
         addr = (ip, port)
         if addr in self.sessions:
             del self.sessions[addr]
     
     def tiene_sesion(self, ip, port):
-        """Verifica si existe una sesión activa"""
         addr = (ip, port)
         return addr in self.sessions
 
@@ -190,14 +183,12 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
 
     def enviar_mensaje(self, ip, port, texto, msg_id=None):
         addr = (ip, port)
-        # Comprobación real de conexión
         if addr not in self.sessions:
             return False 
         
         try:
             cipher = self.sessions[addr]['cipher']
             nonce = os.urandom(12)
-            # Formato: msg_id|texto
             msg_data = f"{msg_id}|{texto}" if msg_id else texto
             ciphertext = cipher.encrypt(nonce, msg_data.encode('utf-8'), None)
             packet = struct.pack("B", PKT_MSG) + self.my_cid + nonce + ciphertext
@@ -207,7 +198,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             return False
     
     def enviar_ack(self, ip, port, msg_id):
-        """Envía ACK de confirmación de entrega"""
         addr = (ip, port)
         if addr not in self.sessions:
             return
@@ -222,7 +212,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             pass
     
     def handle_ack(self, payload, addr):
-        """Maneja ACK recibido y notifica a la GUI"""
         if addr not in self.sessions: return
         session = self.sessions[addr]
         cipher = session['cipher']
@@ -234,16 +223,14 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             plaintext = cipher.decrypt(nonce, ciphertext, None)
             msg_id = plaintext.decode('utf-8')
             
-            # Notificar a la GUI que el mensaje fue entregado
             if self.callback:
-                self.callback(addr, f"ACK|{msg_id}", nombre)
+                self.callback(addr, f"ACK|{msg_id}", nombre, None)  # ✅ 4 argumentos
         except:
             pass
     
     def handle_reconnect(self, payload, addr):
-        """Maneja notificación de reconexión del peer"""
         if addr not in self.sessions:
-            return  # No tenemos sesión con este peer, ignorar
+            return
         
         session = self.sessions[addr]
         contact_name = session.get('name', 'Unknown')
@@ -251,32 +238,25 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         
         print(f"🔄 {contact_name} se ha reconectado")
         
-        # Marcar que ya respondimos a esta dirección para evitar bucle
         if not hasattr(self, '_reconnect_responses'):
             self._reconnect_responses = set()
         
-        # Solo responder si no hemos respondido recientemente
         if addr not in self._reconnect_responses:
             self._reconnect_responses.add(addr)
             self.enviar_reconnect(addr[0], addr[1])
-            # Limpiar después de 2 segundos
             asyncio.get_event_loop().call_later(2, lambda: self._reconnect_responses.discard(addr))
         
-        # Notificar a la GUI que el contacto está online
         if self.callback:
-            self.callback(addr, "PEER_RECONNECTED", contact_id)
+            self.callback(addr, "PEER_RECONNECTED", contact_id, None)  # ✅ 4 argumentos
     
     def enviar_reconnect(self, ip, port):
-        """Envía notificación de reconexión a un peer con sesión guardada"""
         if not self.transport:
             return False
-        
         addr = (ip, port)
         if addr not in self.sessions:
             return False
         
         try:
-            # Paquete simple: tipo + CID
             packet = struct.pack("B", PKT_RECONNECT) + self.my_cid
             self.transport.sendto(packet, addr)
             return True
@@ -285,7 +265,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             return False
     
     def restaurar_sesiones_guardadas(self):
-        """Restaura todas las sesiones guardadas en la DB al iniciar"""
         try:
             contacts = self.db.get_all_contacts()
             for cn, info in contacts.items():
