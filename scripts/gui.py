@@ -168,7 +168,15 @@ class ChatGUI:
 
     def refresh_ui(self):
         self.w_chat.text = self._get_chat_content()
+        
+        # FORZAR scroll al final correctamente
         self.w_chat.buffer.cursor_position = len(self.w_chat.text)
+        
+        # FORZAR que el buffer se actualice visualmente
+        if hasattr(self.w_chat.buffer, 'validate_and_handle'):
+            self.w_chat.buffer.validate_and_handle()
+        
+        # Lista de contactos
         lines = []
         for k in self.contact_keys:
             info = self.db.get_contact_info(k)
@@ -196,8 +204,12 @@ class ChatGUI:
                 lines.append(f"{prefix}{icon} {display_name} 🔔({unread})")
             else:
                 lines.append(f"{prefix}{icon} {display_name}")
+        
         self.w_contacts.text = "\n".join(lines)
+        
+        # FORZAR invalidación completa
         self.app.invalidate()
+
 
     def move_selection(self, delta):
         if not self.contact_keys:
@@ -417,7 +429,7 @@ class ChatGUI:
                     
                     self.db.set_contact_connected(cn, True)
                     self.refresh_ui()
-                    
+
     async def _check_ack_timeouts(self):
         while True:
             await asyncio.sleep(2)
@@ -433,9 +445,9 @@ class ChatGUI:
                         for msg in msgs:
                             if msg.get("status") == "sent":
                                 self.db.mark_message_status(cn, msg["id"], "pending")
-                        ts = datetime.now().strftime("%H:%M")
-                        self.db.add_message(cn, "Sys", "Conexión perdida (sin respuesta). Mensajes en cola.", "error", ts)
+                        # ELIMINADO: Ya no añade mensaje de "Conexión perdida"
                         self.refresh_ui()
+
     async def run(self):
         self._timeout_check_task = asyncio.create_task(self._check_ack_timeouts())
         try:
