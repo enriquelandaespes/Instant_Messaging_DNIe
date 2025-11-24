@@ -6,7 +6,7 @@ from prompt_toolkit.widgets import TextArea, Frame
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import ScrollablePane
-yes_pending=False
+
 class ChatGUI:
     def __init__(self, protocol, my_nick, db):
         self.protocol = protocol
@@ -111,8 +111,8 @@ class ChatGUI:
             port = self.current_cn.split(":")[1]
             display_name = f"{display_name} [:{port}]"
         return f"Chat con {display_name} [{status}]"
+
     def _get_chat_content(self):
-        
         if not self.current_cn:
             return "Esperando contactos..."
         msgs = list(self.db.get_history(self.current_cn))
@@ -152,14 +152,12 @@ class ChatGUI:
                 lines.append(f"[{formatted_time}] {sender}:")
                 lines.append(f" > {text}")
             else:
-                if status == 'delivered':
+                if status == 'delivered' :
                     tick = "✓✓"
-                    yes_pending=False
-                elif status == 'sent' and not yes_pending:
-                    tick = "✓"
+                elif status == 'sent':
+                    tick = "🕒"
                 elif status == 'pending':
                     tick = "🕒"
-                    yes_pending=True
                 else:
                     tick = "🕒"
                 time_and_tick = f"{formatted_time} {tick}"
@@ -434,8 +432,6 @@ class ChatGUI:
                         self.refresh_ui()
 
     async def _check_ack_timeouts(self):
-        already_marked = set()
-        
         while True:
             await asyncio.sleep(2)
             for cn in list(self.contact_keys):
@@ -444,16 +440,10 @@ class ChatGUI:
                     has_timeout = self.db.check_message_timeouts(cn, timeout_seconds=5)
                     if has_timeout:
                         msgs = self.db.get_history(cn)
-                        changed = False
                         for msg in msgs:
-                            msg_id = msg.get("id")
-                            if msg.get("status") == "sent" and msg_id not in already_marked:
-                                self.db.mark_message_status(cn, msg_id, "pending")
-                                already_marked.add(msg_id)
-                                changed = True
-                        
-                        if changed:
-                            self.refresh_ui()
+                            if msg.get("status") == "sent":
+                                self.db.mark_message_status(cn, msg["id"], "pending")
+                        self.refresh_ui()
 
     async def run(self):
         self._timeout_check_task = asyncio.create_task(self._check_ack_timeouts())
