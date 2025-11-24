@@ -249,20 +249,24 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         contact_name = session.get('name', 'Unknown')
         contact_id = f"{addr[0]}:{addr[1]}"
         
-        # Verificar si el paquete requiere respuesta (primer byte del payload)
-        needs_response = len(payload) > 0 and payload[0] == 1
-        
         print(f"🔄 {contact_name} se ha reconectado")
         
-        # Solo responder si el paquete lo solicita (evitar bucle infinito)
-        if needs_response:
-            self.enviar_reconnect(addr[0], addr[1], needs_response=False)
+        # Marcar que ya respondimos a esta dirección para evitar bucle
+        if not hasattr(self, '_reconnect_responses'):
+            self._reconnect_responses = set()
+        
+        # Solo responder si no hemos respondido recientemente
+        if addr not in self._reconnect_responses:
+            self._reconnect_responses.add(addr)
+            self.enviar_reconnect(addr[0], addr[1])
+            # Limpiar después de 2 segundos
+            asyncio.get_event_loop().call_later(2, lambda: self._reconnect_responses.discard(addr))
         
         # Notificar a la GUI que el contacto está online
         if self.callback:
             self.callback(addr, "PEER_RECONNECTED", contact_id)
     
-    def enviar_reconnect(self, ip, port, needs_response=True):
+    def enviar_reconnect(self, ip, port):
         """Envía notificación de reconexión a un peer con sesión guardada"""
         if not self.transport:
             return False
@@ -272,9 +276,8 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             return False
         
         try:
-            # Paquete: tipo + CID + flag (1=requiere respuesta, 0=es respuesta)
-            flag = b'\x01' if needs_response else b'\x00'
-            packet = struct.pack("B", PKT_RECONNECT) + self.my_cid + flag
+            # Paquete simple: tipo + CID
+            packet = struct.pack("B", PKT_RECONNECT) + self.my_cid
             self.transport.sendto(packet, addr)
             return True
         except Exception as e:

@@ -551,14 +551,14 @@ class ChatGUI:
     async def _check_ack_timeouts(self):
         """Verifica periódicamente si hay mensajes sin ACK que indiquen desconexión"""
         while True:
-            await asyncio.sleep(2)  # Verificar cada 2 segundos
+            await asyncio.sleep(5)  # Verificar cada 5 segundos (menos agresivo)
             
             # Revisar todos los contactos conectados
             for cn in list(self.contact_keys):
                 info = self.db.get_contact_info(cn)
                 if info and info.get("is_connected"):
-                    # Verificar si hay timeouts (mensajes sin ACK)
-                    has_timeout = self.db.check_message_timeouts(cn, timeout_seconds=5)
+                    # Verificar si hay timeouts (mensajes sin ACK) - timeout más largo
+                    has_timeout = self.db.check_message_timeouts(cn, timeout_seconds=10)
                     
                     if has_timeout:
                         # El contacto no responde - marcar como desconectado
