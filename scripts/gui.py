@@ -22,12 +22,15 @@ class ChatGUI:
         # --- Widgets ---
         self.w_contacts = TextArea(focusable=False, width=35)
         
-        # Usar FormattedTextControl sin ScrollablePane para que funcione el scroll
-        self.chat_control = FormattedTextControl(
-            text=self._get_chat_content,
-            focusable=False
+        # Usar TextArea para el chat - tiene scroll incorporado
+        self.w_chat = TextArea(
+            text="",
+            multiline=True,
+            focusable=False,
+            scrollbar=True,
+            read_only=True,
+            wrap_lines=True
         )
-        self.w_chat = Window(content=self.chat_control, wrap_lines=True, always_hide_cursor=True)
         
         self.w_input = TextArea(height=3, prompt="> ", multiline=False)
 
@@ -139,15 +142,14 @@ class ChatGUI:
         return f"Chat con {display_name} [{status}]"
 
     def _get_chat_content(self):
-        """Genera contenido del chat con colores usando FormattedText"""
+        """Genera contenido del chat como texto plano"""
         if not self.current_cn:
-            return [("class:info", "Esperando contactos...")]
+            return "Esperando contactos..."
         
         msgs = list(self.db.get_history(self.current_cn))
-        formatted_lines = []
+        lines = []
         PAD_WIDTH = 80
         last_date = None
-
 
         for m in msgs:
             sender, text, timestamp_iso, status = m.get('sender'), m.get('text'), m.get('timestamp'), m.get('status', '')
@@ -171,22 +173,23 @@ class ChatGUI:
             
             if current_date and last_date != current_date and current_date != time:
                 if last_date is not None:
-                    formatted_lines.append(("", "\n"))
+                    lines.append("")
                 separator = f"- {current_date} -"
                 center_pad = " " * max(0, (PAD_WIDTH - len(separator)) // 2)
-                formatted_lines.append(("class:date-separator", f"\n{center_pad}{separator}\n"))
+                lines.append(f"{center_pad}{separator}")
                 last_date = current_date
             
-            formatted_lines.append(("", "\n"))
+            lines.append("")  # Línea en blanco entre mensajes
             
             # Mensajes del sistema
             if sender == "Sys":
                 center_pad = " " * max(0, (PAD_WIDTH - len(text)) // 2)
-                formatted_lines.append(("ansigray", f"{center_pad}--- {text} ---"))
+                lines.append(f"{center_pad}--- {text} ---")
+            
             # Mensajes RECIBIDOS (del otro usuario) - SIN TICK, a la izquierda
             elif status == 'received' or sender != self.my_nick:
-                formatted_lines.append(("class:time-small", f"[{formatted_time}] "))
-                formatted_lines.append(("ansiyellow", f"{sender}:\n > {text}"))
+                lines.append(f"[{formatted_time}] {sender}:")
+                lines.append(f" > {text}")
             
             # Mensajes ENVIADOS por mí - CON TICK, a la derecha
             else:
@@ -201,14 +204,15 @@ class ChatGUI:
                 line_content = f"{text}   {time_and_tick}"
                 padding = " " * max(0, PAD_WIDTH - len(line_content))
                 
-                formatted_lines.append(("", padding))
-                formatted_lines.append(("ansicyan bold", text))
-                formatted_lines.append(("", "   "))
-                formatted_lines.append(("class:time-small-sent", time_and_tick))
+                lines.append(f"{padding}{text}   {time_and_tick}")
         
-        return formatted_lines
+        return "\n".join(lines)
 
     def refresh_ui(self):
+        # Actualizar contenido del chat
+        self.w_chat.text = self._get_chat_content()
+        
+        # Actualizar lista de contactos
         lines = []
         for k in self.contact_keys:
             info = self.db.get_contact_info(k)
