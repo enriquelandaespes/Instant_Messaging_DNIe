@@ -222,6 +222,10 @@ class ChatGUI:
                 self.contact_keys.sort()
             if not self.current_cn: self.current_cn = contact_id
             
+            # Notificar nuevo contacto encontrado
+            ts = datetime.now().strftime("%H:%M")
+            self.db.add_message(contact_id, "Sys", f"Nuevo contacto descubierto: {name}", "system", ts)
+            
         self.refresh_ui()
 
     def on_protocol_msg(self, addr, text, real_cn):
@@ -455,6 +459,12 @@ class ChatGUI:
                         if info.get("ip") and info.get("port"):
                             self.protocol.cerrar_sesion(info["ip"], info["port"])
                         
+                        # Marcar mensajes 'sent' como 'pending' para mostrar reloj 🕒
+                        msgs = self.db.get_history(cn)
+                        for msg in msgs:
+                            if msg.get("status") == "sent":
+                                self.db.mark_message_status(cn, msg["id"], "pending")
+
                         # Agregar mensaje informativo
                         ts = datetime.now().strftime("%H:%M")
                         self.db.add_message(cn, "Sys", "Conexión perdida (sin respuesta). Mensajes en cola.", "error", ts)
