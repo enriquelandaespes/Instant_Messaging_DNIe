@@ -120,7 +120,8 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 msg = msg_data
             
             if self.callback:
-                self.callback(addr, msg, nombre)
+                # Pasar msg_id al callback para evitar duplicados
+                self.callback(addr, msg, nombre, msg_id)
             
             # Enviar ACK de vuelta si tiene msg_id
             if msg_id:

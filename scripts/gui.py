@@ -296,7 +296,7 @@ class ChatGUI:
         
         self.refresh_ui()
 
-    def on_protocol_msg(self, addr, text, real_cn):
+    def on_protocol_msg(self, addr, text, real_cn, msg_id=None):
         # Buscar TODOS los contactos que coincidan con este IP:Puerto O con este nombre
         matching_contacts = []
         all_contacts = self.db.get_all_contacts()
@@ -360,7 +360,8 @@ class ChatGUI:
             self.db.mark_message_status(contact_id, msg_id, "delivered")
         else:
             self.db.set_contact_connected(contact_id, True)
-            msg_id = self.db.add_message(contact_id, real_cn, text, "received", ts)
+            # Pasar msg_id como remote_id para evitar duplicados
+            msg_id = self.db.add_message(contact_id, real_cn, text, "received", ts, remote_id=msg_id)
             if self.current_cn == contact_id:
                 self.db.mark_message_as_read_by_id(contact_id, msg_id)
         self.refresh_ui()
@@ -452,24 +453,15 @@ class ChatGUI:
         for cn, info in all_contacts.items():
             ip = info.get("ip")
             port = info.get("port")
+            name = info.get("name", cn)
             
             # Solo intentar conectar si tiene IP y puerto
             if not ip or not port:
                 continue
             
-            session_key = self.db.get_session_key(cn)
-            
-            # Si tiene sesión guardada, conectar automáticamente
-            if session_key and self.protocol.tiene_sesion(ip, port):
-                # Marcar como conectado (la sesión ya se restauró)
-                self.db.set_contact_connected(cn, True)
-                
-                # Enviar mensaje de prueba silencioso para verificar conectividad
-                # (esto dispara ACK si el otro está online)
-                pending = self.db.get_pending_messages(cn)
-                if pending:
-                    print(f"📤 Enviando {len(pending)} mensaje(s) pendiente(s) a {info.get('name', cn)}")
-                    self.check_pending_messages(cn, ip, port)
+            # Iniciar handshake activo con todos los contactos conocidos
+            # Esto verificará si están online y enviará mensajes pendientes
+            self.protocol.enviar_handshake(ip, port, cn=name)
         
         self.refresh_ui()
     
