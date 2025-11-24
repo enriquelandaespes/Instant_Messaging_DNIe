@@ -98,7 +98,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             )
             
             if self.callback:
-                self.callback(addr, "HANDSHAKE_OK", nombre)
+                self.callback(addr, "HANDSHAKE_OK", nombre, None)
 
             if not is_response:
                 self._enviar_paquete_credenciales(addr[0], addr[1], tipo=PKT_HANDSHAKE_RESP)
