@@ -504,6 +504,47 @@ class ChatGUI:
         
         self.refresh_ui()
     
+    async def _retry_pending_messages(self):
+        """Reintenta enviar mensajes pendientes periódicamente si el destinatario vuelve"""
+        await asyncio.sleep(5)  # Esperar 5 segundos antes del primer intento
+        
+        while True:
+            await asyncio.sleep(10)  # Reintentar cada 10 segundos
+            
+            for cn in list(self.contact_keys):
+                info = self.db.get_contact_info(cn)
+                if not info:
+                    continue
+                    
+                ip = info.get("ip")
+                port = info.get("port")
+                
+                # Solo intentar si tiene IP, puerto y no está marcado como conectado
+                if not ip or not port:
+                    continue
+                
+                # Obtener mensajes pendientes
+                pending = self.db.get_pending_messages(cn)
+                
+                if pending:
+                    # Verificar si tiene sesión guardada (para no hacer handshake)
+                    session_key = self.db.get_session_key(cn)
+                    
+                    if session_key and self.protocol.tiene_sesion(ip, port):
+                        # Intentar enviar mensajes con la sesión existente
+                        success_count = 0
+                        for msg in pending:
+                            if self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id']):
+                                self.db.mark_message_status(cn, msg['id'], "sent")
+                                success_count += 1
+                        
+                        # Si se envió al menos uno, marcar como conectado
+                        if success_count > 0:
+                            self.db.set_contact_connected(cn, True)
+                            ts = datetime.now().strftime("%H:%M")
+                            self.db.add_message(cn, "Sys", f"Reconectado. {success_count} mensaje(s) enviado(s).", "system", ts)
+                            self.refresh_ui()
+    
     async def _check_ack_timeouts(self):
         """Verifica periódicamente si hay mensajes sin ACK que indiquen desconexión"""
         while True:
@@ -538,16 +579,24 @@ class ChatGUI:
                         self.refresh_ui()
     
     async def run(self):
-        # Iniciar tarea de verificación de timeouts
+        # Iniciar tareas de verificación de timeouts y reintentos
         self._timeout_check_task = asyncio.create_task(self._check_ack_timeouts())
+        self._retry_task = asyncio.create_task(self._retry_pending_messages())
         
         try:
             await self.app.run_async()
         finally:
-            # Cancelar tarea al salir
+            # Cancelar tareas al salir
             if self._timeout_check_task:
                 self._timeout_check_task.cancel()
                 try:
                     await self._timeout_check_task
+                except asyncio.CancelledError:
+                    pass
+            
+            if self._retry_task:
+                self._retry_task.cancel()
+                try:
+                    await self._retry_task
                 except asyncio.CancelledError:
                     pass
