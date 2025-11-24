@@ -342,15 +342,19 @@ class ChatGUI:
         
         if text == "HANDSHAKE_OK":
             self.db.set_contact_connected(contact_id, True)
+            # Añadir mensaje de conexión segura solo si es la primera vez (no tiene mensajes de chat)
+            msgs = self.db.get_history(contact_id)
+            user_msgs = [m for m in msgs if m.get('sender') != "Sys"]
+            if len(user_msgs) == 0:
+                self.db.add_message(contact_id, "Sys", "🔒 Conexión segura establecida", "system", ts)
             self.check_pending_messages(contact_id, addr[0], addr[1])
         elif text == "SESSION_RESTORED":
             self.db.set_contact_connected(contact_id, True)
             self.check_pending_messages(contact_id, addr[0], addr[1])
         elif text.startswith("HANDSHAKE_ERROR"):
             self.db.set_contact_connected(contact_id, False)
-            self.db.add_message(contact_id, "Sys", f"ERROR: {text}", "error", ts)
         elif text == "ERROR_DESCIFRADO":
-            self.db.add_message(contact_id, "Sys", "Error cifrado.", "error", ts)
+            pass
         elif text.startswith("ACK|"):
             msg_id = text.split('|', 1)[1]
             self.db.mark_message_status(contact_id, msg_id, "delivered")
@@ -402,9 +406,8 @@ class ChatGUI:
                 contact_name = info.get("name", self.current_cn)
                 self.protocol.enviar_handshake(ip, port, cn=contact_name)
                 self.pending_handshakes.add(self.current_cn)
-                self.db.add_message(self.current_cn, "Sys", "Iniciando conexión...", "system", ts)
+                # No mostrar mensaje innecesario
                 self.refresh_ui()
-            return
 
         # Si HAY sesión y hay texto - enviar mensaje
         if text:
