@@ -153,7 +153,7 @@ class ChatGUI:
                 lines.append(f" > {text}")
             else:
                 if status == 'delivered' :
-                    tick = "✓✓"
+                    tick = "✅"
                 elif status == 'sent':
                     tick = "🕒"
                 elif status == 'pending':
