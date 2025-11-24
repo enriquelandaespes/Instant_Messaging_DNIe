@@ -21,6 +21,7 @@ async def main():
     
     print(f"--- DNIe CHAT (Puerto {port}) ---")
     
+    dnie = None
     try:
         pin = getpass("Introduce PIN DNIe: ")
         print("⌛ Leyendo tarjeta...")
