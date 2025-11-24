@@ -282,14 +282,8 @@ class ChatGUI:
             self.db.set_contact_connected(contact_id, True)
             self.check_pending_messages(contact_id, addr[0], addr[1])
         elif text == "PEER_RECONNECTED":
-            print(f"✨✨✨ PEER_RECONNECTED detectado para {real_cn}")
             self.db.set_contact_connected(contact_id, True)
-            pending = self.db.get_pending_messages(contact_id)
-            if pending:
-                print(f"📤📤📤 Enviando {len(pending)} mensaje(s) pendiente(s) a {real_cn}")
-                self.check_pending_messages(contact_id, addr[0], addr[1])
-            else:
-                print(f"✓ Sin mensajes pendientes para {real_cn}")
+            self.check_pending_messages(contact_id, addr[0], addr[1])
         elif text.startswith("HANDSHAKE_ERROR"):
             self.db.set_contact_connected(contact_id, False)
         elif text == "ERROR_DESCIFRADO":
@@ -309,31 +303,14 @@ class ChatGUI:
         pending = self.db.get_pending_messages(cn)
         if not pending:
             return
-        
-        print(f"\n📨 check_pending_messages llamado:")
-        print(f"   - Contacto: {cn}")
-        print(f"   - Pendientes: {len(pending)}")
-        
-        enviados = 0
-        fallidos = 0
-        
         for msg in pending:
-            msg_text = msg['text'][:30] + "..." if len(msg['text']) > 30 else msg['text']
-            print(f"   - Enviando: '{msg_text}'")
-            
             if self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id']):
                 self.db.mark_message_status(cn, msg['id'], "sent")
-                print(f"     ✓ Enviado")
-                enviados += 1
             else:
-                print(f"     ✗ FALLÓ - Sesión perdida")
-                fallidos += 1
                 info = self.db.get_contact_info(cn)
                 contact_name = info.get("name", cn) if info else cn
                 self.protocol.enviar_handshake(ip, port, cn=contact_name)
                 break
-        
-        print(f"   - Resultado: {enviados} enviados, {fallidos} fallidos\n")
         self.refresh_ui()
 
     async def handle_enter(self):
@@ -384,42 +361,36 @@ class ChatGUI:
 
     async def _auto_connect_and_send_all(self):
         await asyncio.sleep(0.5)
-        print("\n" + "="*50)
-        print("🔄 INICIANDO AUTO-CONEXIÓN")
-        print("="*50)
         all_contacts = self.db.get_all_contacts()
-        connected_count = 0
         for cn, info in all_contacts.items():
             ip = info.get("ip")
             port = info.get("port")
-            name = info.get("name", cn)
             if not ip or not port:
-                print(f"⏭️  Saltando {name} (sin IP/puerto)")
                 continue
             if self.protocol.tiene_sesion(ip, port):
-                print(f"\n📡 Procesando {name}:")
-                print(f"   - IP: {ip}:{port}")
-                print(f"   - Sesión: ✓ ACTIVA")
                 self.db.set_contact_connected(cn, True)
-                print(f"   - Enviando RECONNECT...")
-                if self.protocol.enviar_reconnect(ip, port):
-                    print(f"   - RECONNECT enviado ✓")
-                else:
-                    print(f"   - ERROR enviando RECONNECT ✗")
+                self.protocol.enviar_reconnect(ip, port)
                 pending = self.db.get_pending_messages(cn)
                 if pending:
-                    print(f"   - Mensajes pendientes: {len(pending)}")
-                    print(f"   - Enviando mensajes...")
                     self.check_pending_messages(cn, ip, port)
-                    print(f"   - Mensajes enviados ✓")
-                else:
-                    print(f"   - Sin mensajes pendientes")
-                connected_count += 1
             else:
-                print(f"⚠️  {name} - Sin sesión activa (saltando)")
-        print("\n" + "="*50)
-        print(f"✅ AUTO-CONEXIÓN COMPLETADA: {connected_count} contacto(s)")
-        print("="*50 + "\n")
+                session_key = self.db.get_session_key(cn)
+                if session_key:
+                    try:
+                        from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+                        addr = (ip, port)
+                        self.protocol.sessions[addr] = {
+                            'cipher': ChaCha20Poly1305(session_key),
+                            'name': info.get('name', cn),
+                            'state': 'ESTABLISHED'
+                        }
+                        self.db.set_contact_connected(cn, True)
+                        self.protocol.enviar_reconnect(ip, port)
+                        pending = self.db.get_pending_messages(cn)
+                        if pending:
+                            self.check_pending_messages(cn, ip, port)
+                    except Exception:
+                        pass
         self.refresh_ui()
 
     async def _retry_pending_messages(self):

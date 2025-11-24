@@ -99,7 +99,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 self._enviar_paquete_credenciales(addr[0], addr[1], tipo=PKT_HANDSHAKE_RESP)
                 
         except Exception as e:
-            print(f"Handshake Error: {e}")
+            pass
 
     def handle_message(self, payload, addr):
         if addr not in self.sessions:
@@ -146,7 +146,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                         self.callback(addr, "SESSION_RESTORED", cn, None)
                     return True
                 except Exception as e:
-                    print(f"Error restaurando sesión: {e}")
                     return False
         
         self._enviar_paquete_credenciales(ip, port, tipo=PKT_HANDSHAKE_INIT)
@@ -224,7 +223,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         
         session = self.sessions[addr]
         contact_name = session.get('name', 'Unknown')
-        print(f"🔄 RECONNECT recibido de {contact_name}")
         
         if not hasattr(self, '_reconnect_responses'):
             self._reconnect_responses = set()
@@ -248,7 +246,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             self.transport.sendto(packet, addr)
             return True
         except Exception as e:
-            print(f"Error enviando RECONNECT: {e}")
             return False
 
     def restaurar_sesiones_guardadas(self):
@@ -269,8 +266,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                             'name': name,
                             'state': 'ESTABLISHED'
                         }
-                        print(f"✓ Sesión restaurada: {name} ({ip}:{port})")
                     except Exception as e:
-                        print(f"✗ Error restaurando {name}: {e}")
+                        pass
         except Exception as e:
-            print(f"Error al restaurar sesiones: {e}")
+            pass
