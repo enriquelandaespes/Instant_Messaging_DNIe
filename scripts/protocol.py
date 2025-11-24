@@ -46,8 +46,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             self.handle_ack(payload, addr)
         elif msg_type == PKT_RECONNECT:
             self.handle_reconnect(payload, addr)
-        elif msg_type == PKT_RECONNECT:
-            self.handle_reconnect(payload, addr)
 
     async def handle_handshake(self, payload, addr, is_response):
         try:
@@ -255,7 +253,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         
         # Notificar a la GUI que el contacto está online
         if self.callback:
-            self.callback(addr, "PEER_RECONNECTED", contact_id)
+            self.callback(addr, "PEER_RECONNECTED", contact_id, None)
     
     def enviar_reconnect(self, ip, port):
         """Envía notificación de reconexión a un peer con sesión guardada"""
