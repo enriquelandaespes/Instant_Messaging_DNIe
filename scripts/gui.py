@@ -149,180 +149,26 @@ class ChatGUI:
         PAD_WIDTH = 80
         last_date = None
 
+
         for m in msgs:
-            sender, text, time, status = m.get('sender'), m.get('text'), m.get('time'), m.get('status', '')
-            full_date = m.get('full_date')
+            sender, text, timestamp_iso, status = m.get('sender'), m.get('text'), m.get('timestamp'), m.get('status', '')
+            
+            # Convertir timestamp ISO a HH:MM
+            if timestamp_iso:
+                try:
+                    dt = datetime.fromisoformat(timestamp_iso)
+                    time = dt.strftime("%H:%M")
+                    full_date = dt.strftime("%Y-%m-%d %H:%M")
+                except:
+                    time = timestamp_iso[:5] if len(timestamp_iso) >= 5 else "??:??"
+                    full_date = None
+            else:
+                time = "??:??"
+                full_date = None
             
             # Añadir separador de fecha si cambió el día
             formatted_time = self._format_timestamp(time, full_date)
-            current_date = formatted_time.split()[0] if ' ' in formatted_time else None
-            
-            if current_date and last_date != current_date and current_date != time:
-                if last_date is not None:
-                    formatted_lines.append(("", "\n"))
-                separator = f"- {current_date} -"
-                center_pad = " " * max(0, (PAD_WIDTH - len(separator)) // 2)
-                formatted_lines.append(("class:date-separator", f"\n{center_pad}{separator}\n"))
-                last_date = current_date
-            
-# gui.py
-import asyncio
-from datetime import datetime, timedelta
-from prompt_toolkit.application import Application
-from prompt_toolkit.layout import Layout, HSplit, VSplit, Window
-from prompt_toolkit.widgets import TextArea, Frame
-from prompt_toolkit.layout.controls import FormattedTextControl
-from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import ScrollablePane
-
-class ChatGUI:
-    def __init__(self, protocol, my_nick, db):
-        self.protocol = protocol 
-        self.my_nick = my_nick
-        self.db = db
-        
-        self.contact_keys = [] 
-        self.current_cn = None 
-        self.pending_handshakes = set()
-        self._timeout_check_task = None  # Tarea para verificar timeouts 
-
-        # --- Widgets ---
-        self.w_contacts = TextArea(focusable=False, width=35)
-        
-        # Usar ScrollablePane con FormattedTextControl para mantener colores
-        chat_control = FormattedTextControl(
-            text=self._get_chat_content,
-            focusable=True
-        )
-        chat_window = Window(content=chat_control, wrap_lines=True)
-        self.w_chat = ScrollablePane(chat_window)
-        
-        self.w_input = TextArea(height=3, prompt="> ", multiline=False)
-
-        # --- Layout ---
-        self.layout = Layout(
-            HSplit([
-                VSplit([
-                    Frame(self.w_contacts, title="Vecinos (DNIe)"), 
-                    Frame(self.w_chat, title=self._get_chat_title)
-                ]),
-                Frame(self.w_input, title=f"Escribe aquí ({my_nick})")
-            ]),
-            focused_element=self.w_input
-        )
-
-        kb = KeyBindings()
-        @kb.add("c-c")
-        def _(event): event.app.exit()
-        @kb.add("up")
-        def _(event): self.move_selection(-1)
-        @kb.add("down")
-        def _(event): self.move_selection(1)
-        @kb.add("enter")
-        def _(event): asyncio.create_task(self.handle_enter())
-        @kb.add("c-d")
-        def _(event): self.force_disconnect()  # Ctrl+D para forzar desconexión (debug)
-
-        # Estilos personalizados para texto
-        from prompt_toolkit.styles import Style
-        custom_style = Style.from_dict({
-            'date-separator': 'fg:ansigray italic',  # Fecha separadora más discreta
-            'time-small': 'fg:ansigray',  # Hora pequeña y gris para mensajes recibidos
-            'time-small-sent': 'fg:#666666',  # Hora pequeña y gris oscuro para mensajes enviados
-        })
-        
-        self.app = Application(
-            layout=self.layout, 
-            key_bindings=kb, 
-            full_screen=True, 
-            mouse_support=True,
-            style=custom_style
-        )
-        self._load_initial_contacts()
-
-    def _format_timestamp(self, time_str, full_date_str=None):
-        """Convierte timestamp a formato legible: 'Hoy 17:59', 'Ayer 18:30', '21 Nov 10:15'"""
-        try:
-            if full_date_str:
-                # Si tenemos fecha completa (formato: 'YYYY-MM-DD HH:MM')
-                msg_datetime = datetime.strptime(full_date_str, "%Y-%m-%d %H:%M")
-            else:
-                # Solo tenemos hora, asumir hoy
-                msg_datetime = datetime.strptime(f"{datetime.now().strftime('%Y-%m-%d')} {time_str}", "%Y-%m-%d %H:%M")
-            
-            now = datetime.now()
-            today = now.date()
-            msg_date = msg_datetime.date()
-            
-            if msg_date == today:
-                return f"Hoy {time_str}"
-            elif msg_date == today - timedelta(days=1):
-                return f"Ayer {time_str}"
-            elif msg_date.year == today.year:
-                # Mismo año: solo día y mes
-                return msg_datetime.strftime(f"%d %b {time_str}")
-            else:
-                # Año diferente: fecha completa
-                return msg_datetime.strftime(f"%d/%m/%y {time_str}")
-        except:
-            # Si falla el parsing, devolver el original
-            return time_str
-
-    def _load_initial_contacts(self):
-        for cn in self.db.get_all_contacts().keys():
-            if cn not in self.contact_keys: self.contact_keys.append(cn)
-        self.contact_keys.sort()
-        if self.contact_keys and self.current_cn is None:
-            self.current_cn = self.contact_keys[0]
-        self.refresh_ui()
-
-    def _get_chat_title(self):
-        if not self.current_cn: return "Chat Seguro"
-        info = self.db.get_contact_info(self.current_cn)
-        status = "🔴 OFFLINE"
-        if info and info.get("is_connected"): status = "🟢 CONECTADO"
-        elif info and info.get("ip"): status = "🟡 DISPONIBLE"
-        if self.current_cn in self.pending_handshakes: status = "⏳ CONECTANDO..."
-        
-        # Mostrar nombre legible y acortado
-        full_name = info.get("name", self.current_cn) if info else self.current_cn
-        
-        # Acortar nombre: solo nombre y primer apellido
-        name_parts = full_name.split()
-        if len(name_parts) >= 2:
-            if "," in full_name:
-                parts = full_name.split(",")
-                apellidos = parts[0].strip().split()
-                nombre = parts[1].strip().split()[0] if len(parts) > 1 else ""
-                display_name = f"{nombre} {apellidos[0]}"
-            else:
-                display_name = f"{name_parts[0]} {name_parts[1]}"
-        else:
-            display_name = full_name
-        
-        if ":" in self.current_cn:
-            port = self.current_cn.split(":")[1]
-            display_name = f"{display_name} [:{port}]"
-        
-        return f"Chat con {display_name} [{status}]"
-
-    def _get_chat_content(self):
-        """Genera contenido del chat con colores usando FormattedText"""
-        if not self.current_cn:
-            return [("class:info", "Esperando contactos...")]
-        
-        msgs = list(self.db.get_history(self.current_cn))
-        formatted_lines = []
-        PAD_WIDTH = 80
-        last_date = None
-
-        for m in msgs:
-            sender, text, time, status = m.get('sender'), m.get('text'), m.get('time'), m.get('status', '')
-            full_date = m.get('full_date')
-            
-            # Añadir separador de fecha si cambió el día
-            formatted_time = self._format_timestamp(time, full_date)
-            current_date = formatted_time.split()[0] if ' ' in formatted_time else None
+            current_date = formatted_time.split()[0] if formatted_time and ' ' in formatted_time else None
             
             if current_date and last_date != current_date and current_date != time:
                 if last_date is not None:
