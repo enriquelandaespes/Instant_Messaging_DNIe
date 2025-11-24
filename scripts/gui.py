@@ -295,7 +295,7 @@ class ChatGUI:
         
         self.refresh_ui()
 
-    def on_protocol_msg(self, addr, text, real_cn):
+    def on_protocol_msg(self, addr, text, real_cn, msg_id=None):
         # Buscar TODOS los contactos que coincidan con este IP:Puerto O con este nombre
         matching_contacts = []
         all_contacts = self.db.get_all_contacts()

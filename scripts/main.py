@@ -48,6 +48,7 @@ async def main():
         gui.on_protocol_msg(addr, text, nombre, msg_id)
 
 
+
     protocol = SecureIMProtocol(dnie, db, protocol_callback)
     
     # Pasamos la DB a la GUI

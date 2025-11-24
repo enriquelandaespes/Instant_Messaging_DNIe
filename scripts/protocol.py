@@ -127,14 +127,12 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             if self.callback:
                 # CAMBIO: Pasar msg_id junto con el mensaje
                 # Formato nuevo del callback: (addr, mensaje_o_comando, nombre, msg_id)
-                self.callback(addr, msg, nombre, msg_id)
-            
-            # Enviar ACK de vuelta si tiene msg_id
-            if msg_id:
-                self.enviar_ack(addr[0], addr[1], msg_id)
-        except: 
-            pass
-
+                self.callback(addr, msg, nombre, msg_id, None)
+            if not is_response:
+                self._enviar_paquete_credenciales(addr[0], addr[1], tipo=PKT_HANDSHAKE_RESP)
+    
+        except Exception as e:
+            print(f"Handshake Error: {e}")
 
     def enviar_handshake(self, ip, port, cn=None):
         """Envía handshake solo si no hay clave guardada"""
@@ -158,7 +156,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                     # Marcar como conectado
                     self.db.set_contact_connected(cn, True)
                     if self.callback:
-                        self.callback(addr, "SESSION_RESTORED", cn)
+                        self.callback(addr, "SESSION_RESTORED", cn, None)
                     return True
                 except Exception as e:
                     print(f"Error crítico restaurando sesión: {e}")
