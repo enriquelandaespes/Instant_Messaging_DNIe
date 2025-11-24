@@ -575,7 +575,7 @@ class ChatGUI:
         self._retry_task = asyncio.create_task(self._retry_pending_messages())
         
         # Conectar automáticamente con contactos guardados
-        self._auto_connect_task = asyncio.create_task(self._auto_connect_saved_contacts())
+        self._auto_connect_task = asyncio.create_task(self._auto_connect_and_send_pending())
         
         try:
             await self.app.run_async()
