@@ -362,36 +362,43 @@ class ChatGUI:
     async def _auto_connect_and_send_all(self):
         await asyncio.sleep(0.5)
         all_contacts = self.db.get_all_contacts()
+        
         for cn, info in all_contacts.items():
             ip = info.get("ip")
             port = info.get("port")
-            if not ip or not port:
+            session_key_hex = info.get("session_key")
+            
+            if not ip or not port or not session_key_hex:
                 continue
-            if self.protocol.tiene_sesion(ip, port):
+            
+            # TRUCO: Restaurar sesión FORZOSAMENTE si tenemos la clave
+            try:
+                from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+                session_key = bytes.fromhex(session_key_hex)
+                addr = (ip, port)
+                
+                # Forzar la sesión en el protocolo
+                self.protocol.sessions[addr] = {
+                    'cipher': ChaCha20Poly1305(session_key),
+                    'name': info.get('name', cn),
+                    'state': 'ESTABLISHED'
+                }
+                
+                # Marcar como conectado
                 self.db.set_contact_connected(cn, True)
+                
+                # CLAVE: Enviar RECONNECT inmediatamente
                 self.protocol.enviar_reconnect(ip, port)
+                
+                # Si hay pendientes, enviarlos
                 pending = self.db.get_pending_messages(cn)
                 if pending:
                     self.check_pending_messages(cn, ip, port)
-            else:
-                session_key = self.db.get_session_key(cn)
-                if session_key:
-                    try:
-                        from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
-                        addr = (ip, port)
-                        self.protocol.sessions[addr] = {
-                            'cipher': ChaCha20Poly1305(session_key),
-                            'name': info.get('name', cn),
-                            'state': 'ESTABLISHED'
-                        }
-                        self.db.set_contact_connected(cn, True)
-                        self.protocol.enviar_reconnect(ip, port)
-                        pending = self.db.get_pending_messages(cn)
-                        if pending:
-                            self.check_pending_messages(cn, ip, port)
-                    except Exception:
-                        pass
+            except Exception:
+                pass
+        
         self.refresh_ui()
+
 
     async def _retry_pending_messages(self):
         await asyncio.sleep(5)
