@@ -241,6 +241,10 @@ class ChatGUI:
             self.db.set_contact_connected(contact_id, True)
             self.db.add_message(contact_id, "Sys", "CONEXIÓN SEGURA ESTABLECIDA", "system", ts)
             self.check_pending_messages(contact_id, addr[0], addr[1])
+        elif text == "SESSION_RESTORED":
+            self.db.set_contact_connected(contact_id, True)
+            self.db.add_message(contact_id, "Sys", "Sesión restaurada (sin handshake)", "system", ts)
+            self.check_pending_messages(contact_id, addr[0], addr[1])
         elif text.startswith("HANDSHAKE_ERROR"):
             self.db.set_contact_connected(contact_id, False)
             self.db.add_message(contact_id, "Sys", f"ERROR: {text}", "error", ts)
@@ -314,7 +318,9 @@ class ChatGUI:
             
             # Intentar reconectar si no está ya intentando
             if self.current_cn not in self.pending_handshakes:
-                self.protocol.enviar_handshake(ip, port)
+                # Obtener el nombre real del contacto para buscar clave guardada
+                contact_name = info.get("name", self.current_cn)
+                self.protocol.enviar_handshake(ip, port, cn=contact_name)
                 self.pending_handshakes.add(self.current_cn)
                 
                 if text:
@@ -352,7 +358,8 @@ class ChatGUI:
                 
                 # Intentar reconectar
                 if self.current_cn not in self.pending_handshakes:
-                    self.protocol.enviar_handshake(ip, port)
+                    contact_name = info.get("name", self.current_cn)
+                    self.protocol.enviar_handshake(ip, port, cn=contact_name)
                     self.pending_handshakes.add(self.current_cn)
                 return
             
@@ -369,7 +376,8 @@ class ChatGUI:
                 
                 # Intentar reconectar
                 if self.current_cn not in self.pending_handshakes:
-                    self.protocol.enviar_handshake(ip, port)
+                    contact_name = info.get("name", self.current_cn)
+                    self.protocol.enviar_handshake(ip, port, cn=contact_name)
                     self.pending_handshakes.add(self.current_cn)
                 
             self.refresh_ui()

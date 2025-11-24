@@ -42,6 +42,7 @@ class JsonDatabase:
                 json.dump(self.data, f, indent=4, ensure_ascii=False)
         except Exception as e:
             print(f"Error guardando DB: {e}")
+
     # --- MÉTODOS REQUERIDOS POR LA GUI Y PROTOCOLO ---
 
     def get_all_contacts(self):
@@ -52,14 +53,15 @@ class JsonDatabase:
         # Devuelve la info (ip, puerto, estado) de un contacto por su nombre (CN).
         return self.data["contacts"].get(cn)
 
-    def add_or_update_contact(self, cn, name=None, ip=None, port=None, session_key=None, update_seen=True):
-        # Añade un contacto nuevo o actualiza su IP/Puerto y session_key.
+    def add_or_update_contact(self, cn, name=None, ip=None, port=None, session_key=None, peer_cert=None, update_seen=True):
+        # Añade un contacto nuevo o actualiza su IP/Puerto y datos de sesión.
         if cn not in self.data["contacts"]:
             self.data["contacts"][cn] = {
                 "name": name or cn,
                 "ip": ip, 
                 "port": port, 
-                "session_key": session_key, # Nueva clave de sesión persistente
+                "session_key": session_key,  # Clave de sesión persistente (hex)
+                "peer_cert": peer_cert,  # Certificado del peer (hex)
                 "is_connected": False, 
                 "msgs": []
             }
@@ -69,6 +71,7 @@ class JsonDatabase:
             if ip: self.data["contacts"][cn]["ip"] = ip
             if port: self.data["contacts"][cn]["port"] = port
             if session_key: self.data["contacts"][cn]["session_key"] = session_key
+            if peer_cert: self.data["contacts"][cn]["peer_cert"] = peer_cert
         
         self.save()
     
@@ -182,6 +185,24 @@ class JsonDatabase:
             self.save()
         
         return has_timeout
+
+    def get_session_key(self, cn):
+        # Devuelve la clave de sesión guardada (como bytes) o None
+        if cn not in self.data["contacts"]: 
+            return None
+        key_hex = self.data["contacts"][cn].get("session_key")
+        if key_hex:
+            return bytes.fromhex(key_hex)
+        return None
+    
+    def get_peer_cert(self, cn):
+        # Devuelve el certificado del peer guardado (como bytes) o None
+        if cn not in self.data["contacts"]: 
+            return None
+        cert_hex = self.data["contacts"][cn].get("peer_cert")
+        if cert_hex:
+            return bytes.fromhex(cert_hex)
+        return None
 
     # Métodos de compatibilidad (por si acaso)
     def load_history(self): return self.data["contacts"]

@@ -24,27 +24,11 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         self.sessions = {} 
         self.my_cid = os.urandom(4)
         self.handshake_in_progress = {} 
-        
-        # Cargar sesiones persistentes
-        self.load_sessions_from_db()
-
-    def load_sessions_from_db(self):
-        contacts = self.db.get_all_contacts()
-        for cn, data in contacts.items():
-            if data.get('session_key') and data.get('ip') and data.get('port'):
-                try:
-                    session_key = bytes.fromhex(data['session_key'])
-                    addr = (data['ip'], data['port'])
-                    self.sessions[addr] = {
-                        'cipher': ChaCha20Poly1305(session_key),
-                        'name': data['name'],
-                        'state': 'ESTABLISHED'
-                    }
-                except Exception as e:
-                    print(f"Error cargando sesión de {cn}: {e}")
 
     def connection_made(self, transport):
         self.transport = transport
+        # Restaurar sesiones guardadas al inicio
+        self.restaurar_sesiones_guardadas()
 
     def datagram_received(self, data, addr):
         if len(data) < 5: return
@@ -98,8 +82,15 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 'state': 'ESTABLISHED'
             }
             
-            # Guardar clave de sesión en DB (como hex string)
-            self.db.add_or_update_contact(nombre, ip=addr[0], port=addr[1], session_key=session_key.hex())
+            # Guardar la clave de sesión y certificado en la DB para uso futuro
+            self.db.add_or_update_contact(
+                nombre, 
+                name=nombre,
+                ip=addr[0], 
+                port=addr[1],
+                session_key=session_key.hex(),
+                peer_cert=cert_bytes.hex()
+            )
             
             if self.callback:
                 self.callback(addr, "HANDSHAKE_OK", nombre)
@@ -136,15 +127,37 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 self.enviar_ack(addr[0], addr[1], msg_id)
         except: pass
 
-    def enviar_handshake(self, ip, port):
-        # Si ya tenemos sesión establecida (cargada de DB), no hacemos handshake
+    def enviar_handshake(self, ip, port, cn=None):
+        """Envía handshake solo si no hay clave guardada"""
         addr = (ip, port)
+        
+        # Si ya tenemos sesión activa, no hacer nada
         if addr in self.sessions:
-            print(f"Sesión existente con {addr}, saltando handshake.")
-            # NO llamamos al callback para evitar mostrar "CONEXIÓN SEGURA ESTABLECIDA"
-            return
-
+            return True
+        
+        # Si tenemos CN, verificar si hay clave guardada en DB
+        if cn:
+            saved_key = self.db.get_session_key(cn)
+            if saved_key:
+                # Restaurar sesión desde DB sin hacer handshake
+                try:
+                    self.sessions[addr] = {
+                        'cipher': ChaCha20Poly1305(saved_key),
+                        'name': cn,
+                        'state': 'ESTABLISHED'
+                    }
+                    # Marcar como conectado
+                    self.db.set_contact_connected(cn, True)
+                    if self.callback:
+                        self.callback(addr, "SESSION_RESTORED", cn)
+                    return True
+                except:
+                    # Si falla restaurar, eliminar clave y hacer handshake
+                    self.db.add_or_update_contact(cn, session_key=None, peer_cert=None)
+        
+        # No hay clave guardada o falló restaurar - hacer handshake normal
         self._enviar_paquete_credenciales(ip, port, tipo=PKT_HANDSHAKE_INIT)
+        return False
     
     def cerrar_sesion(self, ip, port):
         """Cierra una sesión existente"""
@@ -221,3 +234,28 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 self.callback(addr, f"ACK|{msg_id}", nombre)
         except:
             pass
+    
+    def restaurar_sesiones_guardadas(self):
+        """Restaura todas las sesiones guardadas en la DB al iniciar"""
+        try:
+            contacts = self.db.get_all_contacts()
+            for cn, info in contacts.items():
+                session_key_hex = info.get("session_key")
+                ip = info.get("ip")
+                port = info.get("port")
+                name = info.get("name", cn)
+                
+                if session_key_hex and ip and port:
+                    try:
+                        session_key = bytes.fromhex(session_key_hex)
+                        addr = (ip, port)
+                        self.sessions[addr] = {
+                            'cipher': ChaCha20Poly1305(session_key),
+                            'name': name,
+                            'state': 'ESTABLISHED'
+                        }
+                        print(f"✓ Sesión restaurada con {name} ({ip}:{port})")
+                    except Exception as e:
+                        print(f"✗ Error restaurando sesión con {name}: {e}")
+        except Exception as e:
+            print(f"Error al restaurar sesiones: {e}")
