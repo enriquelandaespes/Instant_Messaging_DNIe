@@ -294,17 +294,37 @@ class ChatGUI:
         self.refresh_ui()
 
     def on_protocol_msg(self, addr, text, real_cn):
-        # Buscar si ya existe un contacto con este IP:Puerto
-        contact_id = None
+        # Buscar TODOS los contactos que coincidan con este IP:Puerto O con este nombre
+        matching_contacts = []
         all_contacts = self.db.get_all_contacts()
         
         for cn, info in all_contacts.items():
-            if info.get("ip") == addr[0] and info.get("port") == addr[1]:
-                contact_id = cn
-                break
+            if (info.get("ip") == addr[0] and info.get("port") == addr[1]) or info.get("name") == real_cn:
+                matching_contacts.append(cn)
         
-        # Si no existe, crear uno nuevo con IP:Puerto como ID
-        if not contact_id:
+        # Si hay varios, fusionarlos en uno solo (el primero)
+        if len(matching_contacts) > 1:
+            contact_id = matching_contacts[0]
+            # Eliminar los duplicados de la lista de keys
+            for dup_cn in matching_contacts[1:]:
+                if dup_cn in self.contact_keys:
+                    self.contact_keys.remove(dup_cn)
+                if dup_cn in self.pending_handshakes:
+                    self.pending_handshakes.remove(dup_cn)
+                # Fusionar en la DB (mover mensajes si los hay)
+                dup_info = self.db.get_contact_info(dup_cn)
+                if dup_info and dup_info.get("msgs"):
+                    main_info = self.db.get_contact_info(contact_id)
+                    if main_info:
+                        main_info["msgs"].extend(dup_info["msgs"])
+                # Eliminar duplicado de la DB
+                if dup_cn in self.db.data["contacts"]:
+                    del self.db.data["contacts"][dup_cn]
+            self.db.save()
+        elif len(matching_contacts) == 1:
+            contact_id = matching_contacts[0]
+        else:
+            # No existe, crear uno nuevo con IP:Puerto como ID
             contact_id = f"{addr[0]}:{addr[1]}"
         
         if contact_id in self.pending_handshakes: 
