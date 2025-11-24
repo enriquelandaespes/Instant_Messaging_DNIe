@@ -42,7 +42,6 @@ class JsonDatabase:
                 json.dump(self.data, f, indent=4, ensure_ascii=False)
         except Exception as e:
             print(f"Error guardando DB: {e}")
-
     # --- MÉTODOS REQUERIDOS POR LA GUI Y PROTOCOLO ---
 
     def get_all_contacts(self):
@@ -53,13 +52,14 @@ class JsonDatabase:
         # Devuelve la info (ip, puerto, estado) de un contacto por su nombre (CN).
         return self.data["contacts"].get(cn)
 
-    def add_or_update_contact(self, cn, name=None, ip=None, port=None, update_seen=True):
-        # Añade un contacto nuevo o actualiza su IP/Puerto.
+    def add_or_update_contact(self, cn, name=None, ip=None, port=None, session_key=None, update_seen=True):
+        # Añade un contacto nuevo o actualiza su IP/Puerto y session_key.
         if cn not in self.data["contacts"]:
             self.data["contacts"][cn] = {
                 "name": name or cn,
                 "ip": ip, 
                 "port": port, 
+                "session_key": session_key, # Nueva clave de sesión persistente
                 "is_connected": False, 
                 "msgs": []
             }
@@ -68,6 +68,7 @@ class JsonDatabase:
             if name: self.data["contacts"][cn]["name"] = name
             if ip: self.data["contacts"][cn]["ip"] = ip
             if port: self.data["contacts"][cn]["port"] = port
+            if session_key: self.data["contacts"][cn]["session_key"] = session_key
         
         self.save()
     
@@ -89,10 +90,6 @@ class JsonDatabase:
         if cn in self.data["contacts"]:
             self.data["contacts"][cn]["is_connected"] = is_connected
             self.save()
-
-    def get_history(self, cn):
-        # Devuelve la lista de mensajes de un contacto
-        return self.data["contacts"].get(cn, {}).get("msgs", [])
 
     def add_message(self, cn, sender, text, status='pending', timestamp=None):
         # Añade un mensaje al historial y devuelve su ID único

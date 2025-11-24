@@ -24,6 +24,24 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         self.sessions = {} 
         self.my_cid = os.urandom(4)
         self.handshake_in_progress = {} 
+        
+        # Cargar sesiones persistentes
+        self.load_sessions_from_db()
+
+    def load_sessions_from_db(self):
+        contacts = self.db.get_all_contacts()
+        for cn, data in contacts.items():
+            if data.get('session_key') and data.get('ip') and data.get('port'):
+                try:
+                    session_key = bytes.fromhex(data['session_key'])
+                    addr = (data['ip'], data['port'])
+                    self.sessions[addr] = {
+                        'cipher': ChaCha20Poly1305(session_key),
+                        'name': data['name'],
+                        'state': 'ESTABLISHED'
+                    }
+                except Exception as e:
+                    print(f"Error cargando sesión de {cn}: {e}")
 
     def connection_made(self, transport):
         self.transport = transport
@@ -80,6 +98,9 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 'state': 'ESTABLISHED'
             }
             
+            # Guardar clave de sesión en DB (como hex string)
+            self.db.add_or_update_contact(nombre, ip=addr[0], port=addr[1], session_key=session_key.hex())
+            
             if self.callback:
                 self.callback(addr, "HANDSHAKE_OK", nombre)
 
@@ -116,6 +137,15 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         except: pass
 
     def enviar_handshake(self, ip, port):
+        # Si ya tenemos sesión establecida (cargada de DB), no hacemos handshake
+        addr = (ip, port)
+        if addr in self.sessions:
+            print(f"Sesión existente con {addr}, saltando handshake.")
+            if self.callback:
+                nombre = self.sessions[addr].get('name', 'Unknown')
+                self.callback(addr, "HANDSHAKE_OK", nombre)
+            return
+
         self._enviar_paquete_credenciales(ip, port, tipo=PKT_HANDSHAKE_INIT)
     
     def cerrar_sesion(self, ip, port):
