@@ -468,7 +468,7 @@ class ChatGUI:
             self.refresh_ui()
 
     async def _auto_connect_saved_contacts(self):
-        """Intenta conectar automáticamente con todos los contactos guardados que tienen mensajes pendientes"""
+        """Intenta conectar automáticamente con todos los contactos que tienen sesión guardada"""
         # Esperar un momento a que la interfaz esté lista
         await asyncio.sleep(1)
         
@@ -481,26 +481,19 @@ class ChatGUI:
             if not ip or not port:
                 continue
             
-            # Verificar si tiene mensajes pendientes o sesión guardada
-            pending = self.db.get_pending_messages(cn)
             session_key = self.db.get_session_key(cn)
             
-            if pending or session_key:
-                # Intentar restaurar sesión si tiene clave guardada
-                if session_key:
-                    # La sesión ya se restauró en protocol.restaurar_sesiones_guardadas()
-                    # Solo necesitamos marcar como conectado y enviar pendientes
-                    if self.protocol.tiene_sesion(ip, port):
-                        self.db.set_contact_connected(cn, True)
-                        if pending:
-                            print(f"📤 Enviando {len(pending)} mensaje(s) pendiente(s) a {info.get('name', cn)}")
-                            self.check_pending_messages(cn, ip, port)
-                else:
-                    # No tiene clave, hacer handshake si tiene pendientes
-                    if pending and cn not in self.pending_handshakes:
-                        contact_name = info.get("name", cn)
-                        self.protocol.enviar_handshake(ip, port, cn=contact_name)
-                        self.pending_handshakes.add(cn)
+            # Si tiene sesión guardada, conectar automáticamente
+            if session_key and self.protocol.tiene_sesion(ip, port):
+                # Marcar como conectado (la sesión ya se restauró)
+                self.db.set_contact_connected(cn, True)
+                
+                # Enviar mensaje de prueba silencioso para verificar conectividad
+                # (esto dispara ACK si el otro está online)
+                pending = self.db.get_pending_messages(cn)
+                if pending:
+                    print(f"📤 Enviando {len(pending)} mensaje(s) pendiente(s) a {info.get('name', cn)}")
+                    self.check_pending_messages(cn, ip, port)
         
         self.refresh_ui()
     
@@ -519,31 +512,43 @@ class ChatGUI:
                 ip = info.get("ip")
                 port = info.get("port")
                 
-                # Solo intentar si tiene IP, puerto y no está marcado como conectado
+                # Solo intentar si tiene IP y puerto
                 if not ip or not port:
                     continue
                 
                 # Obtener mensajes pendientes
                 pending = self.db.get_pending_messages(cn)
                 
-                if pending:
-                    # Verificar si tiene sesión guardada (para no hacer handshake)
-                    session_key = self.db.get_session_key(cn)
+                if not pending:
+                    continue
+                
+                # Verificar si tiene sesión guardada
+                session_key = self.db.get_session_key(cn)
+                
+                if session_key and self.protocol.tiene_sesion(ip, port):
+                    # Intentar enviar mensajes con la sesión existente
+                    success_count = 0
+                    for msg in pending:
+                        if self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id']):
+                            self.db.mark_message_status(cn, msg['id'], "sent")
+                            success_count += 1
+                        else:
+                            # Si falla el envío, salir del bucle
+                            break
                     
-                    if session_key and self.protocol.tiene_sesion(ip, port):
-                        # Intentar enviar mensajes con la sesión existente
-                        success_count = 0
-                        for msg in pending:
-                            if self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id']):
-                                self.db.mark_message_status(cn, msg['id'], "sent")
-                                success_count += 1
+                    # Si se envió al menos uno, marcar como conectado
+                    if success_count > 0:
+                        # Verificar si ya estaba desconectado antes
+                        was_disconnected = not info.get("is_connected")
                         
-                        # Si se envió al menos uno, marcar como conectado
-                        if success_count > 0:
-                            self.db.set_contact_connected(cn, True)
+                        self.db.set_contact_connected(cn, True)
+                        
+                        # Solo mostrar mensaje si estaba desconectado
+                        if was_disconnected:
                             ts = datetime.now().strftime("%H:%M")
                             self.db.add_message(cn, "Sys", f"Reconectado. {success_count} mensaje(s) enviado(s).", "system", ts)
-                            self.refresh_ui()
+                        
+                        self.refresh_ui()
     
     async def _check_ack_timeouts(self):
         """Verifica periódicamente si hay mensajes sin ACK que indiquen desconexión"""
