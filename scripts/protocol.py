@@ -13,7 +13,8 @@ import config
 PKT_HANDSHAKE_INIT = 0x01  
 PKT_MSG            = 0x02  
 PKT_HANDSHAKE_RESP = 0x03
-PKT_ACK            = 0x04  
+PKT_ACK            = 0x04
+PKT_RECONNECT      = 0x05  # Notificar reconexión con sesión guardada
 
 class SecureIMProtocol(asyncio.DatagramProtocol):
     def __init__(self, dnie_manager, db, on_msg_callback):
@@ -43,6 +44,10 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             self.handle_message(payload, addr)
         elif msg_type == PKT_ACK:
             self.handle_ack(payload, addr)
+        elif msg_type == PKT_RECONNECT:
+            self.handle_reconnect(payload, addr)
+        elif msg_type == PKT_RECONNECT:
+            self.handle_reconnect(payload, addr)
 
     async def handle_handshake(self, payload, addr, is_response):
         try:
@@ -120,8 +125,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 msg = msg_data
             
             if self.callback:
-                # Pasar msg_id al callback para evitar duplicados
-                self.callback(addr, msg, nombre, msg_id)
+                self.callback(addr, msg, nombre)
             
             # Enviar ACK de vuelta si tiene msg_id
             if msg_id:
@@ -235,6 +239,39 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 self.callback(addr, f"ACK|{msg_id}", nombre)
         except:
             pass
+    
+    def handle_reconnect(self, payload, addr):
+        """Maneja notificación de reconexión del peer"""
+        if addr not in self.sessions:
+            return  # No tenemos sesión con este peer, ignorar
+        
+        session = self.sessions[addr]
+        contact_name = session.get('name', 'Unknown')
+        contact_id = f"{addr[0]}:{addr[1]}"
+        
+        print(f"🔄 {contact_name} se ha reconectado")
+        
+        # Notificar a la GUI que el contacto está online
+        if self.callback:
+            self.callback(addr, "PEER_RECONNECTED", contact_id)
+    
+    def enviar_reconnect(self, ip, port):
+        """Envía notificación de reconexión a un peer con sesión guardada"""
+        if not self.transport:
+            return False
+        
+        addr = (ip, port)
+        if addr not in self.sessions:
+            return False
+        
+        try:
+            # Paquete simple: solo tipo + CID
+            packet = struct.pack("B", PKT_RECONNECT) + self.my_cid
+            self.transport.sendto(packet, addr)
+            return True
+        except Exception as e:
+            print(f"Error enviando RECONNECT: {e}")
+            return False
     
     def restaurar_sesiones_guardadas(self):
         """Restaura todas las sesiones guardadas en la DB al iniciar"""

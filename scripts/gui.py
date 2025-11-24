@@ -296,7 +296,7 @@ class ChatGUI:
         
         self.refresh_ui()
 
-    def on_protocol_msg(self, addr, text, real_cn, msg_id=None):
+    def on_protocol_msg(self, addr, text, real_cn):
         # Buscar TODOS los contactos que coincidan con este IP:Puerto O con este nombre
         matching_contacts = []
         all_contacts = self.db.get_all_contacts()
@@ -351,6 +351,11 @@ class ChatGUI:
         elif text == "SESSION_RESTORED":
             self.db.set_contact_connected(contact_id, True)
             self.check_pending_messages(contact_id, addr[0], addr[1])
+        elif text == "PEER_RECONNECTED":
+            # El peer se reconectó con sesión guardada
+            self.db.set_contact_connected(contact_id, True)
+            print(f"✓ {real_cn} está online, enviando mensajes pendientes...")
+            self.check_pending_messages(contact_id, addr[0], addr[1])
         elif text.startswith("HANDSHAKE_ERROR"):
             self.db.set_contact_connected(contact_id, False)
         elif text == "ERROR_DESCIFRADO":
@@ -360,8 +365,7 @@ class ChatGUI:
             self.db.mark_message_status(contact_id, msg_id, "delivered")
         else:
             self.db.set_contact_connected(contact_id, True)
-            # Pasar msg_id como remote_id para evitar duplicados
-            msg_id = self.db.add_message(contact_id, real_cn, text, "received", ts, remote_id=msg_id)
+            msg_id = self.db.add_message(contact_id, real_cn, text, "received", ts)
             if self.current_cn == contact_id:
                 self.db.mark_message_as_read_by_id(contact_id, msg_id)
         self.refresh_ui()
@@ -407,8 +411,8 @@ class ChatGUI:
                 contact_name = info.get("name", self.current_cn)
                 self.protocol.enviar_handshake(ip, port, cn=contact_name)
                 self.pending_handshakes.add(self.current_cn)
-                # No mostrar mensaje innecesario
-                self.refresh_ui()
+            self.refresh_ui()
+            return  # Salir aquí - no continuar con el envío
 
         # Si HAY sesión y hay texto - enviar mensaje
         if text:
@@ -445,23 +449,38 @@ class ChatGUI:
                 break  # Si falla, salir
         self.refresh_ui()
     async def _auto_connect_saved_contacts(self):
-        """Intenta conectar automáticamente con todos los contactos que tienen sesión guardada"""
-        # Esperar un momento a que la interfaz esté lista
+        """Conecta automáticamente con contactos que tienen sesión guardada"""
+        # Esperar un momento a que la interfaz y el protocolo estén listos
         await asyncio.sleep(1)
         
         all_contacts = self.db.get_all_contacts()
         for cn, info in all_contacts.items():
             ip = info.get("ip")
             port = info.get("port")
-            name = info.get("name", cn)
             
             # Solo intentar conectar si tiene IP y puerto
             if not ip or not port:
                 continue
             
-            # Iniciar handshake activo con todos los contactos conocidos
-            # Esto verificará si están online y enviará mensajes pendientes
-            self.protocol.enviar_handshake(ip, port, cn=name)
+            # Verificar si el protocolo tiene la sesión restaurada
+            if self.protocol.tiene_sesion(ip, port):
+                contact_name = info.get("name", cn)
+                
+                # La sesión ya existe en memoria, marcar como conectado
+                self.db.set_contact_connected(cn, True)
+                
+                # Enviar paquete RECONNECT para notificar al peer que estamos online
+                self.protocol.enviar_reconnect(ip, port)
+                print(f"🔄 Notificando reconexión a {contact_name}")
+                
+                # Pequeña espera para que el otro lado responda
+                await asyncio.sleep(0.5)
+                
+                # Enviar mensajes pendientes directamente (sin handshake)
+                pending = self.db.get_pending_messages(cn)
+                if pending:
+                    print(f"📤 Enviando {len(pending)} mensaje(s) pendiente(s) a {contact_name}")
+                    self.check_pending_messages(cn, ip, port)
         
         self.refresh_ui()
     
@@ -567,6 +586,9 @@ class ChatGUI:
         self._timeout_check_task = asyncio.create_task(self._check_ack_timeouts())
         self._retry_task = asyncio.create_task(self._retry_pending_messages())
         
+        # Conectar automáticamente con contactos guardados
+        self._auto_connect_task = asyncio.create_task(self._auto_connect_saved_contacts())
+        
         try:
             await self.app.run_async()
         finally:
@@ -582,5 +604,12 @@ class ChatGUI:
                 self._retry_task.cancel()
                 try:
                     await self._retry_task
+                except asyncio.CancelledError:
+                    pass
+            
+            if hasattr(self, '_auto_connect_task') and self._auto_connect_task:
+                self._auto_connect_task.cancel()
+                try:
+                    await self._auto_connect_task
                 except asyncio.CancelledError:
                     pass

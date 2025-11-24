@@ -99,23 +99,14 @@ class JsonDatabase:
                 self.data["contacts"][cn]["last_seen"] = datetime.now().isoformat()
             self.save()
 
-    def add_message(self, cn, sender, text, status="received", timestamp=None, remote_id=None):
+    def add_message(self, cn, sender, text, status="received", timestamp=None):
         # Añade un mensaje al historial
         if cn not in self.data["contacts"]:
             self.add_or_update_contact(cn)
         
-        # --- EVITAR DUPLICADOS ---
-        if remote_id:
-            # Si ya existe mensaje con este remote_id, no lo añadas de nuevo
-            for msg in self.data["contacts"][cn]["msgs"]:
-                if msg.get("remote_id") == remote_id:
-                    print(f"Mensaje duplicado ignorado (remote_id: {remote_id})")
-                    return msg.get("id")  # Ya presente, return igual para no romper lógica
-        
         msg_id = str(uuid.uuid4())
         msg = {
             "id": msg_id,
-            "remote_id": remote_id, # Guardar ID remoto para de-duplicación futura
             "sender": sender,
             "text": text,
             "timestamp": timestamp or datetime.now().isoformat(),
