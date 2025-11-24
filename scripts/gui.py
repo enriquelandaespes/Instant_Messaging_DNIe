@@ -456,18 +456,18 @@ class ChatGUI:
             ip = info.get("ip")
             port = info.get("port")
         
-        if not ip or not port:
-            continue
-        
-        # Verificar si el protocolo YA tiene la sesión restaurada
-        if self.protocol.tiene_sesion(ip, port):
-            self.db.set_contact_connected(cn, True)
+            if not ip or not port:
+                continue
             
-            pending = self.db.get_pending_messages(cn)
-            if pending:
-                print(f"📤 Auto-enviando {len(pending)} mensaje(s) pendiente(s) a {info.get('name', cn)}")
-                self.check_pending_messages(cn, ip, port)
-    
+            # Verificar si el protocolo YA tiene la sesión restaurada
+            if self.protocol.tiene_sesion(ip, port):
+                self.db.set_contact_connected(cn, True)
+                
+                pending = self.db.get_pending_messages(cn)
+                if pending:
+                    print(f"📤 Auto-enviando {len(pending)} mensaje(s) pendiente(s) a {info.get('name', cn)}")
+                    self.check_pending_messages(cn, ip, port)
+        
         self.refresh_ui()
 
 
