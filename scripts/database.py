@@ -138,7 +138,7 @@ class JsonDatabase:
 
     def get_pending_messages(self, cn):
         # Devuelve mensajes que no se pudieron enviar.
-        return [(i, m) for i, m in enumerate(self.get_history(cn)) if m["status"] == "pending"]
+        return [m for m in self.get_history(cn) if m["status"] == "pending"]
     
     def get_unread_count(self, cn, my_nick):
         # Devuelve el número de mensajes no leídos de un contacto
