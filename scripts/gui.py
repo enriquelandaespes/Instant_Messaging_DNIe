@@ -157,9 +157,9 @@ class ChatGUI:
                 elif status == 'sent':
                     tick = "✓"
                 elif status == 'pending':
-                    tick = "🕒"
+                    tick = "RELOJ"
                 else:
-                    tick = "🕒"
+                    tick = "RELOJ"
                 time_and_tick = f"{formatted_time} {tick}"
                 line_content = f"{text}   {time_and_tick}"
                 padding = " " * max(0, PAD_WIDTH - len(line_content))
@@ -168,15 +168,8 @@ class ChatGUI:
 
     def refresh_ui(self):
         self.w_chat.text = self._get_chat_content()
-        
-        # FORZAR scroll al final correctamente
         self.w_chat.buffer.cursor_position = len(self.w_chat.text)
         
-        # FORZAR que el buffer se actualice visualmente
-        if hasattr(self.w_chat.buffer, 'validate_and_handle'):
-            self.w_chat.buffer.validate_and_handle()
-        
-        # Lista de contactos
         lines = []
         for k in self.contact_keys:
             info = self.db.get_contact_info(k)
@@ -206,9 +199,8 @@ class ChatGUI:
                 lines.append(f"{prefix}{icon} {display_name}")
         
         self.w_contacts.text = "\n".join(lines)
-        
-        # FORZAR invalidación completa
         self.app.invalidate()
+
 
 
     def move_selection(self, delta):
