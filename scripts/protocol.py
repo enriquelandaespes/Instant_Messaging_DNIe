@@ -127,7 +127,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             if self.callback:
                 # CAMBIO: Pasar msg_id junto con el mensaje
                 # Formato nuevo del callback: (addr, mensaje_o_comando, nombre, msg_id)
-                self.callback(addr, msg, nombre, msg_id, None)
+                self.callback(addr, msg, nombre, msg_id)
             if not is_response:
                 self._enviar_paquete_credenciales(addr[0], addr[1], tipo=PKT_HANDSHAKE_RESP)
     
