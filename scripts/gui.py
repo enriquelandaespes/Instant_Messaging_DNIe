@@ -211,6 +211,8 @@ class ChatGUI:
     def refresh_ui(self):
         # Actualizar contenido del chat
         self.w_chat.text = self._get_chat_content()
+        # Hacer scroll automático al final
+        self.w_chat.buffer.cursor_position = len(self.w_chat.text)
         
         # Actualizar lista de contactos
         lines = []
@@ -292,8 +294,21 @@ class ChatGUI:
         self.refresh_ui()
 
     def on_protocol_msg(self, addr, text, real_cn):
-        contact_id = f"{addr[0]}:{addr[1]}"
-        if contact_id in self.pending_handshakes: self.pending_handshakes.remove(contact_id)
+        # Buscar si ya existe un contacto con este IP:Puerto
+        contact_id = None
+        all_contacts = self.db.get_all_contacts()
+        
+        for cn, info in all_contacts.items():
+            if info.get("ip") == addr[0] and info.get("port") == addr[1]:
+                contact_id = cn
+                break
+        
+        # Si no existe, crear uno nuevo con IP:Puerto como ID
+        if not contact_id:
+            contact_id = f"{addr[0]}:{addr[1]}"
+        
+        if contact_id in self.pending_handshakes: 
+            self.pending_handshakes.remove(contact_id)
         
         self.db.add_or_update_contact(contact_id, name=real_cn, ip=addr[0], port=addr[1])
         if contact_id not in self.contact_keys:
