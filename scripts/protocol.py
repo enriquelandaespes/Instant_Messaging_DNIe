@@ -224,10 +224,8 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         session = self.sessions[addr]
         contact_name = session.get('name', 'Unknown')
         
-        # Responder con RECONNECT
         self.enviar_reconnect(addr[0], addr[1])
         
-        # Notificar a GUI para enviar pendientes
         if self.callback:
             self.callback(addr, "PEER_RECONNECTED", contact_name, None)
 
