@@ -151,11 +151,12 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                     if self.callback:
                         self.callback(addr, "SESSION_RESTORED", cn)
                     return True
-                except:
-                    # Si falla restaurar, eliminar clave y hacer handshake
-                    self.db.add_or_update_contact(cn, session_key=None, peer_cert=None)
+                except Exception as e:
+                    print(f"Error crítico restaurando sesión: {e}")
+                    # SEGURIDAD: Si falla la restauración, NO hacer handshake.
+                    return False
         
-        # No hay clave guardada o falló restaurar - hacer handshake normal
+        # No hay clave guardada - hacer handshake normal
         self._enviar_paquete_credenciales(ip, port, tipo=PKT_HANDSHAKE_INIT)
         return False
     
@@ -182,7 +183,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         except Exception:
             pass
 
-    # --- CORRECCIÓN: AÑADIDO ARGUMENTO msg_id=None ---
     def enviar_mensaje(self, ip, port, texto, msg_id=None):
         addr = (ip, port)
         # Comprobación real de conexión
