@@ -49,7 +49,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         elif msg_type == PKT_RECONNECT:
             self.handle_reconnect(payload, addr)
 
-    async def handle_handshake(self, payload, addr, is_response=True):
+    async def handle_handshake(self, payload, addr, is_response):
         try:
             offset = 0
             if len(payload) < 32: return
@@ -125,15 +125,12 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 msg = msg_data
             
             if self.callback:
-                # CAMBIO: Pasar msg_id junto con el mensaje
-                # Formato nuevo del callback: (addr, mensaje_o_comando, nombre, msg_id)
-                self.callback(addr, msg, nombre, msg_id)
+                self.callback(addr, msg, nombre)
             
             # Enviar ACK de vuelta si tiene msg_id
             if msg_id:
                 self.enviar_ack(addr[0], addr[1], msg_id)
-        except: 
-            pass
+        except: pass
 
     def enviar_handshake(self, ip, port, cn=None):
         """Envía handshake solo si no hay clave guardada"""
