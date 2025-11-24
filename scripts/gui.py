@@ -22,13 +22,12 @@ class ChatGUI:
         # --- Widgets ---
         self.w_contacts = TextArea(focusable=False, width=35)
         
-        # Usar ScrollablePane con FormattedTextControl para mantener colores
-        chat_control = FormattedTextControl(
+        # Usar FormattedTextControl sin ScrollablePane para que funcione el scroll
+        self.chat_control = FormattedTextControl(
             text=self._get_chat_content,
-            focusable=True
+            focusable=False
         )
-        chat_window = Window(content=chat_control, wrap_lines=True)
-        self.w_chat = ScrollablePane(chat_window)
+        self.w_chat = Window(content=self.chat_control, wrap_lines=True, always_hide_cursor=True)
         
         self.w_input = TextArea(height=3, prompt="> ", multiline=False)
 
@@ -195,17 +194,15 @@ class ChatGUI:
                 elif status == 'sent': tick = "✓"
                 else: tick = "🕒" # pending
                 
-                # Alineación a la derecha
-                lines_text = text.split('\n')
-                max_len = max(len(l) for l in lines_text)
-                
                 # Fecha/Hora y tick
-                time_and_tick = f"[{formatted_time}] {tick}"
+                time_and_tick = f"{formatted_time} {tick}"
                 
-                formatted_lines.append(("", "\n")) # Espacio extra
+                # Calcular padding para alinear a la derecha
+                line_content = f"{text}   {time_and_tick}"
+                padding = " " * max(0, PAD_WIDTH - len(line_content))
                 
-                # Mostrar mensaje alineado (simple)
-                formatted_lines.append(("ansicyan bold", f"{self.my_nick}:\n > {text}"))
+                formatted_lines.append(("", padding))
+                formatted_lines.append(("ansicyan bold", text))
                 formatted_lines.append(("", "   "))
                 formatted_lines.append(("class:time-small-sent", time_and_tick))
         
@@ -258,36 +255,36 @@ class ChatGUI:
         self.refresh_ui()
 
     def add_peer(self, name, ip, port):
-        contact_id = f"{ip}:{port}"
-        existing = self.db.get_contact_info(contact_id)
+        # Buscar si ya existe un contacto con este IP:Puerto O con este nombre
+        existing_cn = None
+        all_contacts = self.db.get_all_contacts()
         
-        if existing:
-            if existing.get("name") != name and "dni-im" not in name:
-                self.db.update_contact_name(contact_id, name)
-        else:
-            all_contacts = self.db.get_all_contacts()
-            found_old_cn = None
+        # Primero buscar por IP:Puerto
+        for cn, info in all_contacts.items():
+            if info.get("ip") == ip and info.get("port") == port:
+                existing_cn = cn
+                break
+        
+        # Si no se encontró, buscar por nombre (para evitar duplicados)
+        if not existing_cn:
             for cn, info in all_contacts.items():
-                if info.get("name") == name and cn != contact_id:
-                    found_old_cn = cn
+                if info.get("name") == name:
+                    existing_cn = cn
                     break
-            
-            if found_old_cn:
-                self.db.add_or_update_contact(contact_id, name=name, ip=ip, port=port)
-                self.db.merge_contacts(found_old_cn, contact_id)
-                if found_old_cn in self.contact_keys:
-                    self.contact_keys.remove(found_old_cn)
-                if contact_id not in self.contact_keys:
-                    self.contact_keys.append(contact_id)
-                    self.contact_keys.sort()
-                if self.current_cn == found_old_cn:
-                    self.current_cn = contact_id
-            else:
-                self.db.add_or_update_contact(contact_id, name=name, ip=ip, port=port)
-                if contact_id not in self.contact_keys:
-                    self.contact_keys.append(contact_id)
-                    self.contact_keys.sort()
-                if not self.current_cn: self.current_cn = contact_id
+        
+        if existing_cn:
+            # Ya existe, solo actualizar IP/puerto
+            self.db.add_or_update_contact(existing_cn, name=name, ip=ip, port=port)
+        else:
+            # Nuevo contacto - usar IP:Puerto como ID
+            contact_id = f"{ip}:{port}"
+            self.db.add_or_update_contact(contact_id, name=name, ip=ip, port=port)
+            if contact_id not in self.contact_keys:
+                self.contact_keys.append(contact_id)
+                self.contact_keys.sort()
+            if not self.current_cn: 
+                self.current_cn = contact_id
+        
         self.refresh_ui()
 
     def on_protocol_msg(self, addr, text, real_cn):
