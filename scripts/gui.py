@@ -362,36 +362,29 @@ class ChatGUI:
     async def _auto_connect_and_send_all(self):
         await asyncio.sleep(0.5)
         all_contacts = self.db.get_all_contacts()
+        
         for cn, info in all_contacts.items():
             ip = info.get("ip")
             port = info.get("port")
+            
             if not ip or not port:
                 continue
-            if self.protocol.tiene_sesion(ip, port):
-                self.db.set_contact_connected(cn, True)
-                self.protocol.enviar_reconnect(ip, port)
-                pending = self.db.get_pending_messages(cn)
-                if pending:
-                    self.check_pending_messages(cn, ip, port)
-            else:
-                session_key = self.db.get_session_key(cn)
-                if session_key:
-                    try:
-                        from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
-                        addr = (ip, port)
-                        self.protocol.sessions[addr] = {
-                            'cipher': ChaCha20Poly1305(session_key),
-                            'name': info.get('name', cn),
-                            'state': 'ESTABLISHED'
-                        }
-                        self.db.set_contact_connected(cn, True)
-                        self.protocol.enviar_reconnect(ip, port)
-                        pending = self.db.get_pending_messages(cn)
-                        if pending:
-                            self.check_pending_messages(cn, ip, port)
-                    except Exception:
-                        pass
+            
+            # TRUCO: Simular que presionamos Enter en este contacto
+            # Guardamos el contacto actual
+            original_cn = self.current_cn
+            
+            # Cambiamos temporalmente al contacto para "simular" que estamos ahí
+            self.current_cn = cn
+            
+            # Llamamos a handle_enter() que hace todo el trabajo
+            await self.handle_enter()
+            
+            # Restauramos el contacto original
+            self.current_cn = original_cn
+        
         self.refresh_ui()
+
 
     async def _retry_pending_messages(self):
         await asyncio.sleep(5)
