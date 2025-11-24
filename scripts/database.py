@@ -58,7 +58,7 @@ class JsonDatabase:
                 "ip": kwargs.get("ip"),
                 "port": kwargs.get("port"),
                 "msgs": [],
-                "connected": False,
+                "is_connected": False,
                 "last_seen": None,
                 "session_key": None,
                 "peer_cert": None
@@ -90,7 +90,7 @@ class JsonDatabase:
     def set_contact_connected(self, cn, connected):
         # Marca un contacto como conectado/desconectado
         if cn in self.data["contacts"]:
-            self.data["contacts"][cn]["connected"] = connected
+            self.data["contacts"][cn]["is_connected"] = connected
             if not connected:
                 self.data["contacts"][cn]["last_seen"] = datetime.now().isoformat()
             self.save()
