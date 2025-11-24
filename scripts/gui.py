@@ -423,12 +423,20 @@ class ChatGUI:
                     self.refresh_ui()
 
     async def _check_ack_timeouts(self):
+        blocked_until = {}  # Diccionario para bloquear temporalmente cada contacto
+    
         while True:
             await asyncio.sleep(2)
+            now = datetime.now().timestamp()
+            
             for cn in list(self.contact_keys):
+                # Si está bloqueado temporalmente, saltar
+                if cn in blocked_until and now < blocked_until[cn]:
+                    continue
+                
                 info = self.db.get_contact_info(cn)
                 if info and info.get("is_connected"):
-                    has_timeout = self.db.check_message_timeouts(cn, timeout_seconds=10)
+                    has_timeout = self.db.check_message_timeouts(cn, timeout_seconds=5)
                     if has_timeout:
                         self.db.set_contact_connected(cn, False)
                         if info.get("ip") and info.get("port"):
@@ -437,8 +445,12 @@ class ChatGUI:
                         for msg in msgs:
                             if msg.get("status") == "sent":
                                 self.db.mark_message_status(cn, msg["id"], "pending")
-                        # ELIMINADO: Ya no añade mensaje de "Conexión perdida"
+                        
+                        # Bloquear este contacto durante 10 segundos para que retry funcione
+                        blocked_until[cn] = now + 10
+                        
                         self.refresh_ui()
+
 
     async def run(self):
         self._timeout_check_task = asyncio.create_task(self._check_ack_timeouts())
