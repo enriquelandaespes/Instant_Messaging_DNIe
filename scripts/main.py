@@ -21,6 +21,9 @@ async def main():
     
     print(f"--- DNIe CHAT (Puerto {port}) ---")
     
+    loop = asyncio.get_running_loop()
+    db = JsonDatabase()
+    
     dnie = None
     try:
         pin = getpass("Introduce PIN DNIe: ")
@@ -35,21 +38,12 @@ async def main():
             # Limpieza completa
             my_nick = raw.replace("(AUTENTICACIÓN)", "").replace("(Autenticación)", "").replace("(FIRMA)", "").strip()
         else:
-            my_nick = "DNIe Desconocido"
-            
-        print(f"✅ Identidad cargada: {my_nick}")
+            my_nick = "Usuario Desconocido"
 
     except Exception as e:
-        print(f"❌ Error DNIe: {e}")
-        # Fallback para pruebas sin tarjeta
-        my_nick = "Usuario Sin DNIe"
-        # return 
+        print(f"Error al leer DNIe: {e}")
+        sys.exit(1)
 
-    # 1. Inicializar Base de Datos
-    db = JsonDatabase()
-
-    loop = asyncio.get_running_loop()
-    
     def protocol_callback(addr, text, nombre):
         gui.on_protocol_msg(addr, text, nombre)
 

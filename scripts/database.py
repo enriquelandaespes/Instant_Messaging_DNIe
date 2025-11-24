@@ -29,87 +29,110 @@ class JsonDatabase:
             
             # Asegurar estructura correcta por si el archivo es viejo
             if "contacts" not in self.data:
-                self.data = {"contacts": {}}
-                
+                self.data["contacts"] = {}
         except Exception as e:
-            print(f"Error cargando DB: {e}")
+            print(f"Error al cargar DB: {e}")
             self.data = {"contacts": {}}
 
     def save(self):
-        # Guarda los datos en el archivo JSON(De momento sin cifrar)
+        # Guarda la base de datos en el archivo JSON
         try:
             with open(self.filepath, 'w', encoding='utf-8') as f:
-                json.dump(self.data, f, indent=4, ensure_ascii=False)
+                json.dump(self.data, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"Error guardando DB: {e}")
-
-    # --- MÉTODOS REQUERIDOS POR LA GUI Y PROTOCOLO ---
+            print(f"Error al guardar DB: {e}")
 
     def get_all_contacts(self):
-        # Devuelve todos los contactos 
+        # Devuelve todos los contactos
         return self.data.get("contacts", {})
 
     def get_contact_info(self, cn):
-        # Devuelve la info (ip, puerto, estado) de un contacto por su nombre (CN).
+        # Devuelve información de un contacto específico
         return self.data["contacts"].get(cn)
 
-    def add_or_update_contact(self, cn, name=None, ip=None, port=None, session_key=None, peer_cert=None, update_seen=True):
-        # Añade un contacto nuevo o actualiza su IP/Puerto y datos de sesión.
+    def add_or_update_contact(self, cn, **kwargs):
+        # Añade o actualiza un contacto
         if cn not in self.data["contacts"]:
             self.data["contacts"][cn] = {
-                "name": name or cn,
-                "ip": ip, 
-                "port": port, 
-                "session_key": session_key,  # Clave de sesión persistente (hex)
-                "peer_cert": peer_cert,  # Certificado del peer (hex)
-                "is_connected": False, 
-                "msgs": []
+                "name": kwargs.get("name", cn),
+                "ip": kwargs.get("ip"),
+                "port": kwargs.get("port"),
+                "msgs": [],
+                "connected": False,
+                "last_seen": None,
+                "session_key": None,
+                "peer_cert": None
             }
         else:
-            # Si ya existe, actualizamos los campos que nos pasan
-            if name: self.data["contacts"][cn]["name"] = name
-            if ip: self.data["contacts"][cn]["ip"] = ip
-            if port: self.data["contacts"][cn]["port"] = port
-            if session_key: self.data["contacts"][cn]["session_key"] = session_key
-            if peer_cert: self.data["contacts"][cn]["peer_cert"] = peer_cert
+            # Actualizar campos existentes
+            for key, value in kwargs.items():
+                if key in ["name", "ip", "port"]:
+                    self.data["contacts"][cn][key] = value
         
         self.save()
-    
 
-    def get_history(self, cn):
-        # Devuelve la lista de mensajes de un contacto
-        return self.data["contacts"].get(cn, {}).get("msgs", [])
+    def update_contact_name(self, contact_id, new_name):
+        # Actualiza el nombre de un contacto
+        if contact_id in self.data["contacts"]:
+            self.data["contacts"][contact_id]["name"] = new_name
+            self.save()
 
-    def add_message(self, cn, sender, text, status='pending', timestamp=None):
-        # Añade un mensaje al historial y devuelve su ID único
+    def merge_contacts(self, old_cn, new_cn):
+        # Fusiona dos contactos (cuando cambia el ID)
+        if old_cn in self.data["contacts"] and new_cn in self.data["contacts"]:
+            # Mover mensajes del viejo al nuevo
+            old_msgs = self.data["contacts"][old_cn].get("msgs", [])
+            self.data["contacts"][new_cn]["msgs"].extend(old_msgs)
+            # Eliminar contacto viejo
+            del self.data["contacts"][old_cn]
+            self.save()
+
+    def set_contact_connected(self, cn, connected):
+        # Marca un contacto como conectado/desconectado
+        if cn in self.data["contacts"]:
+            self.data["contacts"][cn]["connected"] = connected
+            if not connected:
+                self.data["contacts"][cn]["last_seen"] = datetime.now().isoformat()
+            self.save()
+
+    def add_message(self, cn, sender, text, status="received", timestamp=None):
+        # Añade un mensaje al historial
         if cn not in self.data["contacts"]:
             self.add_or_update_contact(cn)
         
-        now = datetime.now()
-        if not timestamp:
-            timestamp = now.strftime("%H:%M")
-            
-        msg_id = str(uuid.uuid4()) # ID único para gestionar los Ticks (Visual)
+        msg_id = str(uuid.uuid4())
         msg = {
             "id": msg_id,
             "sender": sender,
             "text": text,
-            "status": status,
-            "time": timestamp,
-            "full_date": now.strftime("%Y-%m-%d %H:%M"),  # Fecha completa para comparaciones
-            "sent_timestamp": now.timestamp() if status == "sent" else None,
-            "read": False  # Inicializar como no leído
+            "timestamp": timestamp or datetime.now().isoformat(),
+            "status": status,  # "sent", "delivered", "received", "pending", "error", "system"
+            "read": False,
+            "sent_timestamp": datetime.now().timestamp() if status == "sent" else None
         }
+        
         self.data["contacts"][cn]["msgs"].append(msg)
         self.save()
         return msg_id
 
+    def get_history(self, cn):
+        # Devuelve el historial de mensajes con un contacto
+        if cn not in self.data["contacts"]:
+            return []
+        return self.data["contacts"][cn].get("msgs", [])
+
     def mark_message_status(self, cn, msg_id, status):
-        # Actualiza el estado de un mensaje
-        if cn not in self.data["contacts"]: return
+        # Marca el estado de un mensaje
+        if cn not in self.data["contacts"]:
+            return
+        
         for msg in self.data["contacts"][cn]["msgs"]:
             if msg.get("id") == msg_id:
                 msg["status"] = status
+                if status == "sent":
+                    msg["sent_timestamp"] = datetime.now().timestamp()
+                elif status == "delivered":
+                    msg["sent_timestamp"] = None
                 self.save()
                 return
 
