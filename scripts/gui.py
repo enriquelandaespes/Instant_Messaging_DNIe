@@ -110,6 +110,9 @@ class ChatGUI:
         if self.contact_keys and self.current_cn is None:
             self.current_cn = self.contact_keys[0]
         self.refresh_ui()
+        
+        # Programar auto-conexión después de que la interfaz esté lista
+        asyncio.create_task(self._auto_connect_saved_contacts())
 
     def _get_chat_title(self):
         if not self.current_cn: return "Chat Seguro"
@@ -464,6 +467,43 @@ class ChatGUI:
             self.db.add_message(self.current_cn, "Sys", "Desconectado manualmente", "system", ts)
             self.refresh_ui()
 
+    async def _auto_connect_saved_contacts(self):
+        """Intenta conectar automáticamente con todos los contactos guardados que tienen mensajes pendientes"""
+        # Esperar un momento a que la interfaz esté lista
+        await asyncio.sleep(1)
+        
+        all_contacts = self.db.get_all_contacts()
+        for cn, info in all_contacts.items():
+            ip = info.get("ip")
+            port = info.get("port")
+            
+            # Solo intentar conectar si tiene IP y puerto
+            if not ip or not port:
+                continue
+            
+            # Verificar si tiene mensajes pendientes o sesión guardada
+            pending = self.db.get_pending_messages(cn)
+            session_key = self.db.get_session_key(cn)
+            
+            if pending or session_key:
+                # Intentar restaurar sesión si tiene clave guardada
+                if session_key:
+                    # La sesión ya se restauró en protocol.restaurar_sesiones_guardadas()
+                    # Solo necesitamos marcar como conectado y enviar pendientes
+                    if self.protocol.tiene_sesion(ip, port):
+                        self.db.set_contact_connected(cn, True)
+                        if pending:
+                            print(f"📤 Enviando {len(pending)} mensaje(s) pendiente(s) a {info.get('name', cn)}")
+                            self.check_pending_messages(cn, ip, port)
+                else:
+                    # No tiene clave, hacer handshake si tiene pendientes
+                    if pending and cn not in self.pending_handshakes:
+                        contact_name = info.get("name", cn)
+                        self.protocol.enviar_handshake(ip, port, cn=contact_name)
+                        self.pending_handshakes.add(cn)
+        
+        self.refresh_ui()
+    
     async def _check_ack_timeouts(self):
         """Verifica periódicamente si hay mensajes sin ACK que indiquen desconexión"""
         while True:
