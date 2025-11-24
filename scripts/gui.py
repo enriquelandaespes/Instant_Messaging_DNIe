@@ -491,11 +491,11 @@ class ChatGUI:
             self.pending_handshakes.remove(cn)
     
     async def _retry_pending_messages(self):
-        """Reintenta enviar mensajes pendientes periódicamente SOLO si ya existe sesión guardada"""
-        await asyncio.sleep(5)  # Esperar 5 segundos antes del primer intento
+        """Reintenta enviar mensajes pendientes periódicamente y notifica reconexión"""
+        await asyncio.sleep(3)  # Esperar 3 segundos antes del primer intento
         
         while True:
-            await asyncio.sleep(10)  # Reintentar cada 10 segundos
+            await asyncio.sleep(5)  # Reintentar cada 5 segundos
             
             for cn in list(self.contact_keys):
                 info = self.db.get_contact_info(cn)
@@ -509,21 +509,24 @@ class ChatGUI:
                 if not ip or not port:
                     continue
                 
-                # Verificar si tiene sesión guardada (requisito para auto-reconectar)
+                # Verificar si tiene sesión guardada
                 session_key = self.db.get_session_key(cn)
-                
-                # SOLO intentar reconectar si YA hay sesión guardada
                 if not session_key:
                     continue
                 
                 # Obtener mensajes pendientes
                 pending = self.db.get_pending_messages(cn)
-                
                 if not pending:
                     continue
                 
                 # Verificar si la sesión está activa en memoria
                 if self.protocol.tiene_sesion(ip, port):
+                    # Enviar RECONNECT para notificar que estamos online
+                    self.protocol.enviar_reconnect(ip, port)
+                    
+                    # Esperar un poco para que el otro lado responda
+                    await asyncio.sleep(0.3)
+                    
                     # Intentar enviar mensajes con la sesión existente
                     success_count = 0
                     for msg in pending:
@@ -531,14 +534,11 @@ class ChatGUI:
                             self.db.mark_message_status(cn, msg['id'], "sent")
                             success_count += 1
                         else:
-                            # Si falla el envío, salir del bucle
                             break
                     
                     # Si se envió al menos uno, marcar como conectado
                     if success_count > 0:
-                        # Verificar si ya estaba desconectado antes
                         was_disconnected = not info.get("is_connected")
-                        
                         self.db.set_contact_connected(cn, True)
                         
                         # Solo mostrar mensaje si estaba desconectado
@@ -582,8 +582,10 @@ class ChatGUI:
                         self.refresh_ui()
     
     async def run(self):
-        # Iniciar tareas de verificación de timeouts y reintentos
-        self._timeout_check_task = asyncio.create_task(self._check_ack_timeouts())
+        # DESACTIVADO: El timeout check era demasiado agresivo
+        # self._timeout_check_task = asyncio.create_task(self._check_ack_timeouts())
+        self._timeout_check_task = None
+        
         self._retry_task = asyncio.create_task(self._retry_pending_messages())
         
         # Conectar automáticamente con contactos guardados
@@ -593,12 +595,8 @@ class ChatGUI:
             await self.app.run_async()
         finally:
             # Cancelar tareas al salir
-            if self._timeout_check_task:
-                self._timeout_check_task.cancel()
-                try:
-                    await self._timeout_check_task
-                except asyncio.CancelledError:
-                    pass
+            # _timeout_check_task está desactivado
+            pass
             
             if self._retry_task:
                 self._retry_task.cancel()
