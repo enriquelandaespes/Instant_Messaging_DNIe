@@ -17,6 +17,7 @@ class ChatGUI:
         self.current_cn = None
         self.pending_handshakes = set()
         self._timeout_check_task = None
+        self.already_marked_as_pending = set()
 
         self.w_contacts = TextArea(focusable=False, width=35)
         self.w_chat = TextArea(text="", multiline=True, focusable=False, scrollbar=True, read_only=True, wrap_lines=True)
@@ -302,6 +303,8 @@ class ChatGUI:
         elif text.startswith("ACK|"):
             ack_msg_id = text.split('|', 1)[1]
             self.db.mark_message_status(contact_id, ack_msg_id, "delivered")
+            if ack_msg_id in self.already_marked_as_pending:
+                self.already_marked_as_pending.remove(ack_msg_id)
         else:
             self.db.set_contact_connected(contact_id, True)
             received_msg_id = self.db.add_message(contact_id, real_cn, text, "received", ts, msg_id=msg_id)
@@ -424,16 +427,16 @@ class ChatGUI:
                     enviados = 0
                     for msg in pending:
                         if self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id']):
-                            self.db.mark_message_status(cn, msg['id'], "sent")
-                            enviados += 1
+                            msg_id = msg['id']
+                            if msg_id not in self.already_marked_as_pending:
+                                self.db.mark_message_status(cn, msg_id, "sent")
+                                enviados += 1
                     
                     if enviados > 0:
                         self.db.set_contact_connected(cn, True)
                         self.refresh_ui()
 
     async def _check_ack_timeouts(self):
-        already_marked = set()
-        
         while True:
             await asyncio.sleep(2)
             for cn in list(self.contact_keys):
@@ -445,9 +448,9 @@ class ChatGUI:
                         changed = False
                         for msg in msgs:
                             msg_id = msg.get("id")
-                            if msg.get("status") == "sent" and msg_id not in already_marked:
+                            if msg.get("status") == "sent" and msg_id not in self.already_marked_as_pending:
                                 self.db.mark_message_status(cn, msg_id, "pending")
-                                already_marked.add(msg_id)
+                                self.already_marked_as_pending.add(msg_id)
                                 changed = True
                         
                         if changed:
