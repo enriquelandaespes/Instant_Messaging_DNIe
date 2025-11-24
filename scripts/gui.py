@@ -399,37 +399,19 @@ class ChatGUI:
             self.refresh_ui()
 
     async def _auto_connect_and_send_all(self):
-        """✨ NUEVO: Envía mensajes pendientes a TODOS los contactos con sesión restaurada"""
+        """Notifica reconexión a los peers y reenvía automáticos los pendientes."""
         await asyncio.sleep(0.5)
-        
-        print("🔄 Iniciando auto-conexión con contactos guardados...")
-        
         all_contacts = self.db.get_all_contacts()
-        connected_count = 0
-        
         for cn, info in all_contacts.items():
             ip = info.get("ip")
             port = info.get("port")
-            
-            if not ip or not port:
-                print(f"⏭️  Saltando {info.get('name', cn)} - sin IP/puerto")
-                continue
-            
+            if not ip or not port: continue
             if self.protocol.tiene_sesion(ip, port):
                 self.db.set_contact_connected(cn, True)
-                
+                self.protocol.enviar_reconnect(ip, port)
                 pending = self.db.get_pending_messages(cn)
                 if pending:
-                    print(f"📤 Enviando {len(pending)} mensaje(s) pendiente(s) a {info.get('name', cn)}")
                     self.check_pending_messages(cn, ip, port)
-                    connected_count += 1
-                else:
-                    print(f"✓ Sesión activa con {info.get('name', cn)} - sin mensajes pendientes")
-                    self.protocol.enviar_reconnect(ip, port)
-                    connected_count += 1
-        
-        print(f"✅ Auto-conexión completada: {connected_count} contacto(s) conectado(s)")
-        self.refresh_ui()
 
     async def _retry_pending_messages(self):
         await asyncio.sleep(5)

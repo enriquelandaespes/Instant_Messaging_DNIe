@@ -1,4 +1,3 @@
-# main.py
 import asyncio
 import sys
 import config
@@ -30,7 +29,6 @@ async def main():
         print("⌛ Leyendo tarjeta...")
         dnie = DNIeManager(pin)
         
-        # --- LIMPIEZA DE TU PROPIO NOMBRE ---
         cert = x509.load_der_x509_certificate(dnie.cert_der, default_backend())
         cn_attrs = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
         if cn_attrs:
@@ -58,11 +56,9 @@ async def main():
     def discovery_callback(name, ip, p):
         contact_id = f"{ip}:{p}"
         existing = db.get_contact_info(contact_id)
-        
         if existing:
             if existing.get("name") == name:
                 return
-        
         gui.add_peer(name, ip, p)
         
     mdns = DiscoveryService(port, my_nick, discovery_callback)
