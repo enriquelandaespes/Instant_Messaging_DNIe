@@ -236,7 +236,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             
             # Notificar a la GUI que el mensaje fue entregado
             if self.callback:
-                self.callback(addr, f"ACK|{msg_id}", nombre)
+                self.callback(addr, f"ACK|{msg_id}", nombre, msg_id)
         except:
             pass
     
