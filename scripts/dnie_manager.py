@@ -42,6 +42,9 @@ class DNIeManager:
             
             firma = priv_key.sign(self.public_bytes, mechanism=Mechanism.SHA256_RSA_PKCS)
             return cert_der, firma
+    
+    def obtener_credenciales(self):
+        return self.cert_der, self.firma_cached
 
     def get_user_name(self):
         # Extraer nombre para mostrarlo
