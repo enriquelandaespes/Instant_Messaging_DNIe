@@ -288,6 +288,22 @@ class ChatGUI:
             # Nuevo contacto - usar IP:Puerto como ID
             contact_id = f"{ip}:{port}"
             self.db.add_or_update_contact(contact_id, name=name, ip=ip, port=port)
+            session_key = self.db.get_session_key(existing_cn)
+            if session_key and self.protocol.tiene_sesion(ip, port):
+                # Sesión existe en memoria - reconectar
+                self.db.set_contact_connected(existing_cn, True)
+                # Enviar mensajes pendientes automáticamente (silencioso)
+                pending = self.db.get_pending_messages(existing_cn)
+                if pending:
+                    asyncio.create_task(self._send_pending_silent(existing_cn, ip, port))
+        
+        if existing_cn:
+            # Ya existe, solo actualizar IP/puerto
+            self.db.add_or_update_contact(existing_cn, name=name, ip=ip, port=port)
+        else:
+            # Nuevo contacto - usar IP:Puerto como ID
+            contact_id = f"{ip}:{port}"
+            self.db.add_or_update_contact(contact_id, name=name, ip=ip, port=port)
             if contact_id not in self.contact_keys:
                 self.contact_keys.append(contact_id)
                 self.contact_keys.sort()
@@ -432,7 +448,17 @@ class ChatGUI:
             ts = datetime.now().strftime("%H:%M")
             self.db.add_message(self.current_cn, "Sys", "Desconectado manualmente", "system", ts)
             self.refresh_ui()
-
+            
+    async def _send_pending_silent(self, cn, ip, port):
+        """Envía mensajes pendientes silenciosamente en background"""
+        await asyncio.sleep(0.5)  # Pequeño delay
+        pending = self.db.get_pending_messages(cn)
+        for msg in pending:
+            if self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id']):
+                self.db.mark_message_status(cn, msg['id'], "sent")
+            else:
+                break  # Si falla, salir
+        self.refresh_ui()
     async def _auto_connect_saved_contacts(self):
         """Intenta conectar automáticamente con todos los contactos que tienen sesión guardada"""
         # Esperar un momento a que la interfaz esté lista
