@@ -390,69 +390,24 @@ class ChatGUI:
             self.refresh_ui()
             return
 
-        if not info.get("is_connected"):
-            if text:
-                self.db.add_message(self.current_cn, self.my_nick, text, "pending", ts)
-                self.w_input.text = ""
-            
-            self.db.set_contact_connected(self.current_cn, False)
-            self.protocol.cerrar_sesion(ip, port)
-            self.refresh_ui()
-            
-            if self.current_cn not in self.pending_handshakes:
-                contact_name = info.get("name", self.current_cn)
-                self.protocol.enviar_handshake(ip, port, cn=contact_name)
-                self.pending_handshakes.add(self.current_cn)
-                
-                if text:
-                    self.db.add_message(self.current_cn, "Sys", "Destinatario desconectado. Mensaje en cola.", "system", ts)
-                else:
-                    self.db.add_message(self.current_cn, "Sys", "Intentando conectar...", "system", ts)
-                
-                self.refresh_ui()
-                
-                await asyncio.sleep(8)
-                if self.current_cn in self.pending_handshakes:
-                    self.pending_handshakes.remove(self.current_cn)
-                    if text:
-                        self.db.add_message(self.current_cn, "Sys", "No se pudo conectar. Mensaje guardado en cola.", "error", ts)
-                    else:
-                        self.db.add_message(self.current_cn, "Sys", "No se pudo conectar.", "error", ts)
-                    self.refresh_ui()
-            else:
-                if text:
-                    self.db.add_message(self.current_cn, "Sys", "Ya intentando conectar. Mensaje en cola.", "system", ts)
-                self.refresh_ui()
-            return
-
+        # Si hay texto, guardarlo siempre (se enviará automáticamente)
         if text:
             if not self.protocol.tiene_sesion(ip, port):
-                self.db.set_contact_connected(self.current_cn, False)
+                # No hay sesión - guardar como pendiente
                 self.db.add_message(self.current_cn, self.my_nick, text, "pending", ts)
-                self.db.add_message(self.current_cn, "Sys", "Sesión perdida. Reconectando...", "error", ts)
                 self.w_input.text = ""
                 self.refresh_ui()
-                
-                if self.current_cn not in self.pending_handshakes:
-                    contact_name = info.get("name", self.current_cn)
-                    self.protocol.enviar_handshake(ip, port, cn=contact_name)
-                    self.pending_handshakes.add(self.current_cn)
                 return
             
+            # Intentar enviar directamente
             msg_id = self.db.add_message(self.current_cn, self.my_nick, text, "sent", ts)
             self.w_input.text = ""
             
             if not self.protocol.enviar_mensaje(ip, port, text, msg_id):
+                # Fallo al enviar - marcar como pendiente
                 self.db.mark_message_status(self.current_cn, msg_id, "pending")
                 self.db.set_contact_connected(self.current_cn, False)
                 self.protocol.cerrar_sesion(ip, port)
-                self.db.add_message(self.current_cn, "Sys", "Fallo de envío. Mensaje en cola.", "error", ts)
-                self.refresh_ui()
-                
-                if self.current_cn not in self.pending_handshakes:
-                    contact_name = info.get("name", self.current_cn)
-                    self.protocol.enviar_handshake(ip, port, cn=contact_name)
-                    self.pending_handshakes.add(self.current_cn)
                 
             self.refresh_ui()
 
@@ -497,8 +452,14 @@ class ChatGUI:
         
         self.refresh_ui()
     
+    async def _clear_pending_handshake(self, cn, delay=8):
+        """Limpia el flag de handshake pendiente después de un delay"""
+        await asyncio.sleep(delay)
+        if cn in self.pending_handshakes:
+            self.pending_handshakes.remove(cn)
+    
     async def _retry_pending_messages(self):
-        """Reintenta enviar mensajes pendientes periódicamente si el destinatario vuelve"""
+        """Reintenta enviar mensajes pendientes periódicamente y conecta automáticamente"""
         await asyncio.sleep(5)  # Esperar 5 segundos antes del primer intento
         
         while True:
@@ -549,6 +510,15 @@ class ChatGUI:
                             self.db.add_message(cn, "Sys", f"Reconectado. {success_count} mensaje(s) enviado(s).", "system", ts)
                         
                         self.refresh_ui()
+                else:
+                    # No tiene sesión - intentar handshake
+                    if cn not in self.pending_handshakes:
+                        contact_name = info.get("name", cn)
+                        self.protocol.enviar_handshake(ip, port, cn=contact_name)
+                        self.pending_handshakes.add(cn)
+                        
+                        # Programar para quitar del pending después de un tiempo
+                        asyncio.create_task(self._clear_pending_handshake(cn, delay=8))
     
     async def _check_ack_timeouts(self):
         """Verifica periódicamente si hay mensajes sin ACK que indiquen desconexión"""
