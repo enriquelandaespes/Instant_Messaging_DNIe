@@ -111,7 +111,7 @@ class ChatGUI:
             self.current_cn = self.contact_keys[0]
         self.refresh_ui()
         # Programar auto-conexión después de que la interfaz esté lista
-        asyncio.create_task(self._auto_connect_saved_contacts())
+        asyncio.create_task(self._auto_connect_and_send_pending())
 
     def _get_chat_title(self):
         if not self.current_cn: return "Chat Seguro"
