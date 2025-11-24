@@ -125,12 +125,16 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 msg = msg_data
             
             if self.callback:
-                self.callback(addr, msg, nombre)
+                # CAMBIO: Pasar msg_id junto con el mensaje
+                # Formato nuevo del callback: (addr, mensaje_o_comando, nombre, msg_id)
+                self.callback(addr, msg, nombre, msg_id)
             
             # Enviar ACK de vuelta si tiene msg_id
             if msg_id:
                 self.enviar_ack(addr[0], addr[1], msg_id)
-        except: pass
+        except: 
+            pass
+
 
     def enviar_handshake(self, ip, port, cn=None):
         """Envía handshake solo si no hay clave guardada"""
@@ -280,20 +284,20 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             for cn, info in contacts.items():
                 session_key_hex = info.get("session_key")
                 ip = info.get("ip")
-                port = info.get("port")
-                name = info.get("name", cn)
-                
-                if session_key_hex and ip and port:
-                    try:
-                        session_key = bytes.fromhex(session_key_hex)
-                        addr = (ip, port)
-                        self.sessions[addr] = {
-                            'cipher': ChaCha20Poly1305(session_key),
-                            'name': name,
-                            'state': 'ESTABLISHED'
-                        }
-                        print(f"✓ Sesión restaurada con {name} ({ip}:{port})")
-                    except Exception as e:
-                        print(f"✗ Error restaurando sesión con {name}: {e}")
+            port = info.get("port")
+            name = info.get("name", cn)
+            
+            if session_key_hex and ip and port:
+                try:
+                    session_key = bytes.fromhex(session_key_hex)
+                    addr = (ip, port)
+                    self.sessions[addr] = {
+                        'cipher': ChaCha20Poly1305(session_key),
+                        'name': name,
+                        'state': 'ESTABLISHED'
+                    }
+                    print(f"✓ Sesión restaurada con {name} ({ip}:{port})")
+                except Exception as e:
+                    print(f"✗ Error restaurando sesión con {name}: {e}")
         except Exception as e:
             print(f"Error al restaurar sesiones: {e}")

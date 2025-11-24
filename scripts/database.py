@@ -99,25 +99,32 @@ class JsonDatabase:
                 self.data["contacts"][cn]["last_seen"] = datetime.now().isoformat()
             self.save()
 
-    def add_message(self, cn, sender, text, status="received", timestamp=None):
-        # Añade un mensaje al historial
+    def add_message(self, cn, sender, text, status="received", timestamp=None, msg_id=None):
         if cn not in self.data["contacts"]:
             self.add_or_update_contact(cn)
-        
-        msg_id = str(uuid.uuid4())
+        if msg_id:
+            for existing_msg in self.data["contacts"][cn]["msgs"]:
+                if existing_msg.get("id") == msg_id:
+                    # Mensaje duplicado detectado - NO insertar
+                    return msg_id
+        else:
+            # Generar nuevo ID si no viene proporcionado (mensajes enviados por ti)
+            msg_id = str(uuid.uuid4())
+    
         msg = {
-            "id": msg_id,
-            "sender": sender,
-            "text": text,
-            "timestamp": timestamp or datetime.now().isoformat(),
-            "status": status,  # "sent", "delivered", "received", "pending", "error", "system"
-            "read": False,
-            "sent_timestamp": datetime.now().timestamp() if status == "sent" else None
+        "id": msg_id,
+        "sender": sender,
+        "text": text,
+        "timestamp": timestamp or datetime.now().isoformat(),
+        "status": status,  # "sent", "delivered", "received", "pending", "error", "system"
+        "read": False,
+        "sent_timestamp": datetime.now().timestamp() if status == "sent" else None
         }
-        
+    
         self.data["contacts"][cn]["msgs"].append(msg)
         self.save()
         return msg_id
+
 
     def get_history(self, cn):
         # Devuelve el historial de mensajes con un contacto
