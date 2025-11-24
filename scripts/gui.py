@@ -171,26 +171,6 @@ class ChatGUI:
             if sender == "Sys":
                 center_pad = " " * max(0, (PAD_WIDTH - len(text)) // 2)
                 formatted_lines.append(("ansigray", f"{center_pad}--- {text} ---"))
-            
-            # Mensajes RECIBIDOS (del otro usuario) - SIN TICK, a la izquierda
-            elif status == 'received' or sender != self.my_nick:
-                formatted_lines.append(("class:time-small", f"[{formatted_time}] "))
-                formatted_lines.append(("ansiyellow", f"{sender}:\n > {text}"))
-            
-            # Mensajes ENVIADOS por mí - CON TICK, a la derecha
-            else:
-                if status == 'delivered': tick = "✓✓"
-                elif status == 'sent': tick = "✓"
-            self.protocol.cerrar_sesion(info["ip"], info["port"])
-            self.db.set_contact_connected(self.current_cn, False)
-            ts = datetime.now().strftime("%H:%M")
-            self.db.add_message(self.current_cn, "Sys", "Desconectado manualmente", "system", ts)
-            self.refresh_ui()
-    
-    def refresh_ui(self):
-        lines = []
-        for k in self.contact_keys:
-            info = self.db.get_contact_info(k)
             if not info: continue
             icon = "🟢" if info.get("is_connected") else ("🟡" if info.get("ip") else "🔴")
             prefix = "➤ " if k == self.current_cn else "  "
