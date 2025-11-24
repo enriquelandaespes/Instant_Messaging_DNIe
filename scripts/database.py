@@ -91,6 +91,10 @@ class JsonDatabase:
             self.data["contacts"][cn]["is_connected"] = is_connected
             self.save()
 
+    def get_history(self, cn):
+        # Devuelve la lista de mensajes de un contacto
+        return self.data["contacts"].get(cn, {}).get("msgs", [])
+
     def add_message(self, cn, sender, text, status='pending', timestamp=None):
         # Añade un mensaje al historial y devuelve su ID único
         if cn not in self.data["contacts"]:
