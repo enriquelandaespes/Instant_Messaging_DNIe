@@ -157,9 +157,9 @@ class ChatGUI:
                 elif status == 'sent':
                     tick = "✓"
                 elif status == 'pending':
-                    tick = "RELOJ"
+                    tick = "🕒"
                 else:
-                    tick = "RELOJ"
+                    tick = "🕒"
                 time_and_tick = f"{formatted_time} {tick}"
                 line_content = f"{text}   {time_and_tick}"
                 padding = " " * max(0, PAD_WIDTH - len(line_content))
@@ -428,7 +428,7 @@ class ChatGUI:
             for cn in list(self.contact_keys):
                 info = self.db.get_contact_info(cn)
                 if info and info.get("is_connected"):
-                    has_timeout = self.db.check_message_timeouts(cn, timeout_seconds=5)
+                    has_timeout = self.db.check_message_timeouts(cn, timeout_seconds=10)
                     if has_timeout:
                         self.db.set_contact_connected(cn, False)
                         if info.get("ip") and info.get("port"):
