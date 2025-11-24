@@ -283,7 +283,10 @@ class ChatGUI:
             self.check_pending_messages(contact_id, addr[0], addr[1])
         elif text == "PEER_RECONNECTED":
             self.db.set_contact_connected(contact_id, True)
-            self.check_pending_messages(contact_id, addr[0], addr[1])
+            # SIEMPRE revisar pendientes cuando recibimos RECONNECT
+            pending = self.db.get_pending_messages(contact_id)
+            if pending:
+                self.check_pending_messages(contact_id, addr[0], addr[1])
         elif text.startswith("HANDSHAKE_ERROR"):
             self.db.set_contact_connected(contact_id, False)
         elif text == "ERROR_DESCIFRADO":
@@ -370,13 +373,17 @@ class ChatGUI:
             if not ip or not port:
                 continue
             
-            # Simular Enter en cada contacto
+            # CLAVE: Marcar como desconectado ANTES de simular Enter
+            self.db.set_contact_connected(cn, False)
+            
+            # Simular Enter
             original_cn = self.current_cn
             self.current_cn = cn
             await self.handle_enter()
             self.current_cn = original_cn
         
         self.refresh_ui()
+
 
 
 
