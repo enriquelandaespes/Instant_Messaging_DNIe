@@ -167,8 +167,17 @@ class ChatGUI:
         return "\n".join(lines)
 
     def refresh_ui(self):
-        self.w_chat.text = self._get_chat_content()
-        self.w_chat.buffer.cursor_position = len(self.w_chat.text)
+        chat_content = self._get_chat_content()
+        self.w_chat.text = chat_content
+        
+        # FORZAR cursor al final de verdad
+        try:
+            # Mover al final del documento
+            self.w_chat.buffer.cursor_position = len(chat_content)
+            # Forzar que el viewport se mueva al final
+            self.w_chat.buffer.cursor_down(count=999999)
+        except:
+            pass
         
         lines = []
         for k in self.contact_keys:
@@ -200,6 +209,7 @@ class ChatGUI:
         
         self.w_contacts.text = "\n".join(lines)
         self.app.invalidate()
+
 
 
 
@@ -313,14 +323,19 @@ class ChatGUI:
         if not pending:
             return
         
-        # Enviar TODOS los mensajes pendientes sin parar
+        # Enviar TODOS sin verificaciones que puedan fallar
         for msg in pending:
-            # Enviar sin verificar respuesta (envío masivo)
-            self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
-            # Marcar como enviado inmediatamente
-            self.db.mark_message_status(cn, msg['id'], "sent")
+            try:
+                # Enviar directamente
+                if self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id']):
+                    # Marcar como enviado
+                    self.db.mark_message_status(cn, msg['id'], "sent")
+            except:
+                # Si falla, continuar con el siguiente
+                pass
         
         self.refresh_ui()
+
 
 
     async def handle_enter(self):
@@ -389,10 +404,10 @@ class ChatGUI:
         self.refresh_ui()
 
     async def _retry_pending_messages(self):
-        await asyncio.sleep(2)  # Esperar menos al inicio
+        await asyncio.sleep(3)
         
         while True:
-            await asyncio.sleep(5)  # Reintentar cada 5 segundos (antes 10)
+            await asyncio.sleep(3)  # Cada 3 segundos (más rápido)
             
             for cn in list(self.contact_keys):
                 info = self.db.get_contact_info(cn)
@@ -405,51 +420,46 @@ class ChatGUI:
                 if not ip or not port:
                     continue
                 
-                session_key = self.db.get_session_key(cn)
-                if not session_key:
-                    continue
-                
                 pending = self.db.get_pending_messages(cn)
                 if not pending:
                     continue
                 
+                # Si tiene sesión, enviar todos
                 if self.protocol.tiene_sesion(ip, port):
-                    # Enviar TODOS los pendientes de golpe
                     for msg in pending:
-                        self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
-                        self.db.mark_message_status(cn, msg['id'], "sent")
+                        try:
+                            if self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id']):
+                                self.db.mark_message_status(cn, msg['id'], "sent")
+                        except:
+                            pass
                     
-                    self.db.set_contact_connected(cn, True)
-                    self.refresh_ui()
+                    if pending:
+                        self.db.set_contact_connected(cn, True)
+                        self.refresh_ui()
+
 
     async def _check_ack_timeouts(self):
-        blocked_until = {}  # Diccionario para bloquear temporalmente cada contacto
-    
         while True:
             await asyncio.sleep(2)
-            now = datetime.now().timestamp()
-            
             for cn in list(self.contact_keys):
-                # Si está bloqueado temporalmente, saltar
-                if cn in blocked_until and now < blocked_until[cn]:
-                    continue
-                
                 info = self.db.get_contact_info(cn)
                 if info and info.get("is_connected"):
                     has_timeout = self.db.check_message_timeouts(cn, timeout_seconds=5)
                     if has_timeout:
-                        self.db.set_contact_connected(cn, False)
-                        if info.get("ip") and info.get("port"):
-                            self.protocol.cerrar_sesion(info["ip"], info["port"])
+                        # SOLO cambiar el estado visual, NO cerrar sesión
+                        # NO llamar a: self.protocol.cerrar_sesion(info["ip"], info["port"])
+                        
+                        # Marcar mensajes sent como pending (para mostrar reloj)
                         msgs = self.db.get_history(cn)
                         for msg in msgs:
                             if msg.get("status") == "sent":
                                 self.db.mark_message_status(cn, msg["id"], "pending")
                         
-                        # Bloquear este contacto durante 10 segundos para que retry funcione
-                        blocked_until[cn] = now + 10
+                        # IMPORTANTE: NO marcar como desconectado
+                        # self.db.set_contact_connected(cn, False)  # COMENTADO
                         
                         self.refresh_ui()
+
 
 
     async def run(self):
