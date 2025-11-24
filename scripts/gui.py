@@ -434,6 +434,8 @@ class ChatGUI:
                         self.refresh_ui()
 
     async def _check_ack_timeouts(self):
+        already_marked = set()
+        
         while True:
             await asyncio.sleep(2)
             for cn in list(self.contact_keys):
@@ -442,10 +444,16 @@ class ChatGUI:
                     has_timeout = self.db.check_message_timeouts(cn, timeout_seconds=5)
                     if has_timeout:
                         msgs = self.db.get_history(cn)
+                        changed = False
                         for msg in msgs:
-                            if msg.get("status") == "sent":
-                                self.db.mark_message_status(cn, msg["id"], "pending")
-                        self.refresh_ui()
+                            msg_id = msg.get("id")
+                            if msg.get("status") == "sent" and msg_id not in already_marked:
+                                self.db.mark_message_status(cn, msg_id, "pending")
+                                already_marked.add(msg_id)
+                                changed = True
+                        
+                        if changed:
+                            self.refresh_ui()
 
     async def run(self):
         self._timeout_check_task = asyncio.create_task(self._check_ack_timeouts())

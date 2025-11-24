@@ -106,6 +106,8 @@ class JsonDatabase:
                     msg["sent_timestamp"] = datetime.now().timestamp()
                 elif status == "delivered":
                     msg["sent_timestamp"] = None
+                elif status == "pending":
+                    msg["sent_timestamp"] = None
                 self.save()
                 return
 
