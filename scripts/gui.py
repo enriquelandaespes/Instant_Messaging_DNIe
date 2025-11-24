@@ -417,9 +417,27 @@ class ChatGUI:
                     
                     self.db.set_contact_connected(cn, True)
                     self.refresh_ui()
-
+                    
+    async def _check_ack_timeouts(self):
+        while True:
+            await asyncio.sleep(2)
+            for cn in list(self.contact_keys):
+                info = self.db.get_contact_info(cn)
+                if info and info.get("is_connected"):
+                    has_timeout = self.db.check_message_timeouts(cn, timeout_seconds=5)
+                    if has_timeout:
+                        self.db.set_contact_connected(cn, False)
+                        if info.get("ip") and info.get("port"):
+                            self.protocol.cerrar_sesion(info["ip"], info["port"])
+                        msgs = self.db.get_history(cn)
+                        for msg in msgs:
+                            if msg.get("status") == "sent":
+                                self.db.mark_message_status(cn, msg["id"], "pending")
+                        ts = datetime.now().strftime("%H:%M")
+                        self.db.add_message(cn, "Sys", "Conexión perdida (sin respuesta). Mensajes en cola.", "error", ts)
+                        self.refresh_ui()
     async def run(self):
-        # self._timeout_check_task = asyncio.create_task(self._check_ack_timeouts())
+        self._timeout_check_task = asyncio.create_task(self._check_ack_timeouts())
         try:
             await self.app.run_async()
         finally:
