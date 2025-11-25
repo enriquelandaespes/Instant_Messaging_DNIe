@@ -21,13 +21,14 @@ async def main():
     print(f"--- DNIe CHAT (Puerto {port}) ---")
     
     loop = asyncio.get_running_loop()
-    db = JsonDatabase()
-    
     dnie = None
+    db = None
     try:
         pin = getpass("Introduce PIN DNIe: ")
         print("⌛ Leyendo tarjeta...")
         dnie = DNIeManager(pin)
+        
+        db = JsonDatabase(dnie)
         
         cert = x509.load_der_x509_certificate(dnie.cert_der, default_backend())
         cn_attrs = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)

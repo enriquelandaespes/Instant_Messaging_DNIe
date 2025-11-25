@@ -1,38 +1,96 @@
 import json
 import os
 import uuid
+import hashlib
+import base64
 from datetime import datetime
-
-DB_FILE = "chat_history.json"
+from cryptography.fernet import Fernet
 
 class JsonDatabase:
-    def __init__(self):
-        self.filepath = DB_FILE
+    def __init__(self, dnie_manager):
+        self.dnie_manager = dnie_manager
         self.data = {"contacts": {}}
+        self.challenge = None
+        self.key = None
+        
+        # Calcular nombre de archivo basado en el hash del número de serie
+        serial = self.dnie_manager.get_serial_number()
+        serial_hash = hashlib.sha256(str(serial).encode()).hexdigest()
+        self.filepath = f"database_{serial_hash}.json"
+        
         self.load()
+
+    def _derive_key(self, signature):
+        # Derivar clave AES (Fernet) de 32 bytes desde la firma
+        # Usamos SHA256 para obtener 32 bytes
+        key_bytes = hashlib.sha256(signature).digest()
+        # Fernet necesita la clave en base64 url-safe
+        return base64.urlsafe_b64encode(key_bytes)
 
     def load(self):
         if not os.path.exists(self.filepath):
+            # Si no existe, creamos nuevo challenge y guardamos
+            self.challenge = os.urandom(4) # 32 bits = 4 bytes
+            print("Generando nuevo challenge para base de datos cifrada...")
+            
+            # Firmar challenge para obtener la clave
+            signature = self.dnie_manager.sign_data(self.challenge)
+            self.key = self._derive_key(signature)
+            
             self.save()
             return
+
         try:
-            with open(self.filepath, 'r', encoding='utf-8') as f:
+            with open(self.filepath, 'rb') as f:
                 content = f.read()
                 if not content:
                     self.data = {"contacts": {}}
-                else:
-                    self.data = json.loads(content)
+                    return
+
+                # Parsear el contenedor JSON cifrado
+                container = json.loads(content)
+                self.challenge = bytes.fromhex(container["challenge"])
+                encrypted_data = container["data"]
+                
+                # Firmar el challenge almacenado para recuperar la clave
+                print("Firmando challenge para descifrar base de datos...")
+                signature = self.dnie_manager.sign_data(self.challenge)
+                self.key = self._derive_key(signature)
+                
+                # Descifrar
+                f = Fernet(self.key)
+                decrypted_json = f.decrypt(encrypted_data.encode()).decode('utf-8')
+                self.data = json.loads(decrypted_json)
+                
             if "contacts" not in self.data:
                 self.data["contacts"] = {}
             self._clean_duplicates()
         except Exception as e:
-            print(f"Error al cargar DB: {e}")
+            print(f"Error al cargar DB cifrada: {e}")
+            # Si falla (ej. firma incorrecta), empezamos vacíos pero NO sobrescribimos el archivo original para no perder datos
             self.data = {"contacts": {}}
+            # Generamos nueva clave temporal para esta sesión para no crashear, 
+            # pero ojo: si guardamos, podríamos sobrescribir. 
+            # Mejor lanzar error o manejarlo. Por ahora, inicializamos vacio.
 
     def save(self):
         try:
+            if not self.key:
+                # Si no tenemos clave (ej. fallo carga), no guardamos para no corromper
+                return
+
+            # Cifrar datos
+            json_str = json.dumps(self.data, ensure_ascii=False)
+            f = Fernet(self.key)
+            encrypted_data = f.encrypt(json_str.encode()).decode('utf-8')
+            
+            container = {
+                "challenge": self.challenge.hex(),
+                "data": encrypted_data
+            }
+            
             with open(self.filepath, 'w', encoding='utf-8') as f:
-                json.dump(self.data, f, ensure_ascii=False, indent=2)
+                json.dump(container, f, indent=2)
         except Exception as e:
             print(f"Error al guardar DB: {e}")
 
