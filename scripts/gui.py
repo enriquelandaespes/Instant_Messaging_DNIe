@@ -25,7 +25,7 @@ class ChatGUI:
         self.layout = Layout(
             HSplit([
                 VSplit([
-                    Frame(self.w_contacts, title="Vecinos (DNIe)"),
+                    Frame(self.w_contacts, title="👥 Contactos"),
                     Frame(self.w_chat, title=self._get_chat_title)
                 ]),
                 Frame(self.w_input, title=f"Escribe aquí ({my_nick})")
@@ -152,10 +152,10 @@ class ChatGUI:
                 lines.append(f"[{formatted_time}] {sender}:")
                 lines.append(f" > {text}")
             else:
-                if status == 'delivered' :
-                    tick = "✅"
+                if status == 'delivered':
+                    tick = "✓✓"
                 elif status == 'sent':
-                    tick = "🕒"
+                    tick = "✓"
                 elif status == 'pending':
                     tick = "🕒"
                 else:
