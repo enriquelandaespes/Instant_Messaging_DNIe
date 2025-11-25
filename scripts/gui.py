@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import unicodedata
 from datetime import datetime, timedelta
 from prompt_toolkit.application import Application
 from prompt_toolkit.layout import Layout, HSplit, VSplit, Window
@@ -29,7 +30,7 @@ class ChatGUI:
                 self.ascii_art = data.get('ascii', {})
         except Exception as e:
             print(f"Error cargando ascii.json: {e}")
-
+        
         self.w_contacts = TextArea(focusable=False, width=35)
         self.w_chat = TextArea(text="", multiline=True, focusable=False, scrollbar=True, read_only=True, wrap_lines=True)
         self.w_ascii = TextArea(height=3, prompt="> ", multiline=False,width=35)
@@ -97,6 +98,19 @@ class ChatGUI:
                 return msg_datetime.strftime(f"%d/%m/%y {time_str}")
         except:
             return time_str
+
+    def _visual_len(self, text):
+        """Calcula el ancho visual de una cadena, considerando emojis y caracteres especiales"""
+        width = 0
+        for char in text:
+            ea = unicodedata.east_asian_width(char)
+            if ea in ('F', 'W'):  # Fullwidth o Wide
+                width += 2
+            elif ea in ('Na', 'H', 'N', 'A'):  # Narrow, Halfwidth, Neutral, Ambiguous
+                width += 1
+            else:
+                width += 1
+        return width
 
     def _load_initial_contacts(self):
         for cn in self.db.get_all_contacts().keys():
@@ -169,11 +183,13 @@ class ChatGUI:
                 last_date = current_date
             lines.append("")
             if sender == "Sys":
-                center_pad = " " * max(0, (PAD_WIDTH - len(text)) // 2)
+                center_pad = " " * max(0, (PAD_WIDTH - self._visual_len(text)) // 2)
                 lines.append(f"{center_pad}--- {text} ---")
             elif status == 'received' or sender != self.my_nick:
                 lines.append(f"[{formatted_time}] {sender}:")
-                lines.append(f" > {text}")
+                # Manejar mensajes multilínea (ASCII art)
+                for line in text.split('\n'):
+                    lines.append(f" > {line}")
             else:
                 if status == 'delivered':
                     tick = "✅"
@@ -183,10 +199,29 @@ class ChatGUI:
                     tick = "🕒"
                 else:
                     tick = "🕒"
+                
                 time_and_tick = f"{formatted_time} {tick}"
-                line_content = f"{text}   {time_and_tick}"
-                padding = " " * max(0, PAD_WIDTH - len(line_content))
-                lines.append(f"{padding}{text}   {time_and_tick}")
+                
+                # Manejar mensajes multilínea (ASCII art enviados)
+                text_lines = text.split('\n')
+                if len(text_lines) > 1:
+                    # ASCII art multilínea - alinear cada línea a la derecha
+                    for i, line in enumerate(text_lines):
+                        if i == len(text_lines) - 1:
+                            # Última línea con timestamp
+                            line_content = f"{line}   {time_and_tick}"
+                            visual_width = self._visual_len(line) + 3 + self._visual_len(time_and_tick)
+                            padding = " " * max(0, PAD_WIDTH - visual_width)
+                            lines.append(f"{padding}{line}   {time_and_tick}")
+                        else:
+                            # Líneas intermedias sin timestamp
+                            padding = " " * max(0, PAD_WIDTH - self._visual_len(line))
+                            lines.append(f"{padding}{line}")
+                else:
+                    # Mensaje de una sola línea
+                    visual_width = self._visual_len(text) + 3 + self._visual_len(time_and_tick)
+                    padding = " " * max(0, PAD_WIDTH - visual_width)
+                    lines.append(f"{padding}{text}   {time_and_tick}")
         return "\n".join(lines)
 
     def refresh_ui(self):
