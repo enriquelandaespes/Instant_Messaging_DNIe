@@ -32,8 +32,18 @@ class ChatGUI:
             print(f"Error cargando ascii.json: {e}")
         
         self.w_contacts = TextArea(focusable=False, width=35)
-        self._chat_control = FormattedTextControl(text="")
-        self.w_chat = ScrollablePane(Window(content=self._chat_control, wrap_lines=True))
+        # Usar FormattedTextControl para colores con tuplas de estilo
+        self._chat_formatted_text = []
+        self._chat_control = FormattedTextControl(
+            text=lambda: self._chat_formatted_text,
+            focusable=False
+        )
+        self.w_chat = Window(
+            content=self._chat_control,
+            wrap_lines=True,
+            scrollbar=True,
+            always_hide_cursor=True
+        )
         self.w_ascii = TextArea(height=3, prompt="> ", multiline=False,width=35)
         self.w_input = TextArea(height=3, prompt="> ", multiline=False)
         self.w_suggestions = TextArea(focusable=False, height=1, style="fg:ansigray")
@@ -182,10 +192,11 @@ class ChatGUI:
         return f"Chat con {display_name} [{status}]"
 
     def _get_chat_content(self):
+        """Devuelve FormattedText (lista de tuplas estilo-texto) para mostrar con colores"""
         if not self.current_cn:
-            return "Esperando contactos..."
+            return [('', "Esperando contactos...")]
         msgs = list(self.db.get_history(self.current_cn))
-        lines = []
+        formatted_lines = []  # Lista de tuplas (estilo, texto)
         PAD_WIDTH = 80
         last_date = None
         for m in msgs:
@@ -208,20 +219,20 @@ class ChatGUI:
             current_date = formatted_time.split()[0] if formatted_time and ' ' in formatted_time else None
             if current_date and last_date != current_date and current_date != time:
                 if last_date is not None:
-                    lines.append("")
+                    formatted_lines.append(('', '\n'))
                 separator = f"- {current_date} -"
                 center_pad = " " * max(0, (PAD_WIDTH - len(separator)) // 2)
-                lines.append(f"{center_pad}{separator}")
+                formatted_lines.append(('', f"{center_pad}{separator}\n"))
                 last_date = current_date
-            lines.append("")
+            formatted_lines.append(('', '\n'))
             if sender == "Sys":
                 center_pad = " " * max(0, (PAD_WIDTH - self._visual_len(text)) // 2)
-                lines.append(f"{center_pad}<msg-system>--- {text} ---</msg-system>")
+                formatted_lines.append(('class:msg-system', f"{center_pad}--- {text} ---\n"))
             elif status == 'received' or sender != self.my_nick:
-                lines.append(f"<msg-received>[{formatted_time}] {sender}:</msg-received>")
+                formatted_lines.append(('class:msg-received', f"[{formatted_time}] {sender}:\n"))
                 # Manejar mensajes multilínea (ASCII art)
                 for line in text.split('\n'):
-                    lines.append(f" > {line}")
+                    formatted_lines.append(('', f" > {line}\n"))
             else:
                 if status == 'delivered':
                     tick = "✅"
@@ -241,25 +252,27 @@ class ChatGUI:
                     for i, line in enumerate(text_lines):
                         if i == len(text_lines) - 1:
                             # Última línea con timestamp
-                            line_content = f"{line}   {time_and_tick}"
                             visual_width = self._visual_len(line) + 3 + self._visual_len(time_and_tick)
                             padding = " " * max(0, PAD_WIDTH - visual_width)
-                            lines.append(f"{padding}{line}   <msg-sent>{time_and_tick}</msg-sent>")
+                            formatted_lines.append(('', f"{padding}{line}   "))
+                            formatted_lines.append(('class:msg-sent', f"{time_and_tick}\n"))
                         else:
                             # Líneas intermedias sin timestamp
                             padding = " " * max(0, PAD_WIDTH - self._visual_len(line))
-                            lines.append(f"{padding}{line}")
+                            formatted_lines.append(('', f"{padding}{line}\n"))
                 else:
                     # Mensaje de una sola línea
                     visual_width = self._visual_len(text) + 3 + self._visual_len(time_and_tick)
                     padding = " " * max(0, PAD_WIDTH - visual_width)
-                    lines.append(f"{padding}{text}   <msg-sent>{time_and_tick}</msg-sent>")
-        return "\n".join(lines)
+                    formatted_lines.append(('', f"{padding}{text}   "))
+                    formatted_lines.append(('class:msg-sent', f"{time_and_tick}\n"))
+        return formatted_lines
 
     def refresh_ui(self):
-        from prompt_toolkit.formatted_text import HTML
-        chat_content = self._get_chat_content()
-        self._chat_control.text = HTML(chat_content)
+        # Actualizar el contenido del chat con tuplas formateadas
+        self._chat_formatted_text = self._get_chat_content()
+        # FormattedTextControl se actualiza automáticamente gracias al lambda
+        self.app.invalidate()
         
         lines = []
         for k in self.contact_keys:
