@@ -1,4 +1,6 @@
 import asyncio
+import json
+import os
 from datetime import datetime, timedelta
 from prompt_toolkit.application import Application
 from prompt_toolkit.layout import Layout, HSplit, VSplit, Window
@@ -17,9 +19,20 @@ class ChatGUI:
         self.current_cn = None
         self.pending_handshakes = set()
         self._timeout_check_task = None
+        
+        # Cargar ASCII art
+        self.ascii_art = {}
+        try:
+            ascii_path = os.path.join(os.path.dirname(__file__), 'ascii.json')
+            with open(ascii_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                self.ascii_art = data.get('ascii', {})
+        except Exception as e:
+            print(f"Error cargando ascii.json: {e}")
 
         self.w_contacts = TextArea(focusable=False, width=35)
         self.w_chat = TextArea(text="", multiline=True, focusable=False, scrollbar=True, read_only=True, wrap_lines=True)
+        self.w_ascii = TextArea(height=3, prompt="> ", multiline=False,width=35)
         self.w_input = TextArea(height=3, prompt="> ", multiline=False)
 
         self.layout = Layout(
@@ -28,7 +41,10 @@ class ChatGUI:
                     Frame(self.w_contacts, title="👥 Contactos"),
                     Frame(self.w_chat, title=self._get_chat_title)
                 ]),
-                Frame(self.w_input, title=f"Escribe aquí ({my_nick})")
+                VSplit([
+                    Frame(self.w_ascii,title=f" ASCII Art "),
+                    Frame(self.w_input, title=f" Escribe aquí ")
+                ])
             ]),
             focused_element=self.w_input
         )
@@ -44,6 +60,13 @@ class ChatGUI:
         def _(event): asyncio.create_task(self.handle_enter())
         @kb.add("c-d")
         def _(event): self.force_disconnect()
+        @kb.add("tab")
+        def _(event):
+            # Cambiar entre w_input y w_ascii
+            if event.app.layout.has_focus(self.w_input):
+                event.app.layout.focus(self.w_ascii)
+            else:
+                event.app.layout.focus(self.w_input)
 
         from prompt_toolkit.styles import Style
         custom_style = Style.from_dict({
@@ -327,6 +350,38 @@ class ChatGUI:
         self.refresh_ui()
 
     async def handle_enter(self):
+        # Detectar desde qué cuadro se envía
+        if self.app.layout.has_focus(self.w_ascii):
+            # Enviar desde ASCII
+            ascii_key = self.w_ascii.text.strip()
+            self.w_ascii.text = ""
+            
+            if ascii_key in self.ascii_art:
+                # Encontrado en el JSON, enviar el arte ASCII
+                ascii_text = self.ascii_art[ascii_key]
+                # Usar el mismo flujo que w_input pero con el arte ASCII
+                if not self.current_cn:
+                    return
+                info = self.db.get_contact_info(self.current_cn)
+                if not info:
+                    return
+                ip, port = info.get("ip"), info.get("port")
+                ts = datetime.now().strftime("%H:%M")
+                
+                if not ip or not self.protocol.tiene_sesion(ip, port):
+                    self.db.add_message(self.current_cn, self.my_nick, ascii_text, "pending", ts)
+                    self.refresh_ui()
+                    return
+                
+                msg_id = self.db.add_message(self.current_cn, self.my_nick, ascii_text, "sent", ts)
+                if not self.protocol.enviar_mensaje(ip, port, ascii_text, msg_id):
+                    self.db.mark_message_status(self.current_cn, msg_id, "pending")
+                    self.db.set_contact_connected(self.current_cn, False)
+                    self.protocol.cerrar_sesion(ip, port)
+                self.refresh_ui()
+            return
+        
+        # Enviar desde w_input normal
         text = self.w_input.text.strip()
         if not self.current_cn:
             self.w_input.text = ""
