@@ -35,6 +35,12 @@ class ChatGUI:
         self.w_chat = TextArea(text="", multiline=True, focusable=False, scrollbar=True, read_only=True, wrap_lines=True)
         self.w_ascii = TextArea(height=3, prompt="> ", multiline=False,width=35)
         self.w_input = TextArea(height=3, prompt="> ", multiline=False)
+        self.w_suggestions = TextArea(focusable=False, height=1, style="fg:ansigray")
+        
+        # Listener para autocompletado en tiempo real
+        def on_ascii_text_changed(_):
+            self._update_ascii_suggestions()
+        self.w_ascii.buffer.on_text_changed += on_ascii_text_changed
 
         self.layout = Layout(
             HSplit([
@@ -43,7 +49,10 @@ class ChatGUI:
                     Frame(self.w_chat, title=self._get_chat_title)
                 ]),
                 VSplit([
-                    Frame(self.w_ascii,title=f" ASCII Art "),
+                    HSplit([
+                        Frame(self.w_ascii, title=" ASCII Art "),
+                        self.w_suggestions
+                    ]),
                     Frame(self.w_input, title=f" Escribe aquí ")
                 ])
             ]),
@@ -111,6 +120,25 @@ class ChatGUI:
             else:
                 width += 1
         return width
+
+    def _update_ascii_suggestions(self):
+        """Muestra sugerencias de ASCII art mientras escribes"""
+        current_text = self.w_ascii.text.strip().lower()
+        if not current_text:
+            self.w_suggestions.text = ""
+            return
+        
+        # Buscar coincidencias
+        matches = [key for key in self.ascii_art.keys() if current_text in key.lower()]
+        
+        if matches:
+            # Mostrar hasta 5 sugerencias
+            suggestions_text = "  Sugerencias: " + ", ".join(matches[:5])
+            if len(matches) > 5:
+                suggestions_text += f" ... (+{len(matches)-5} más)"
+            self.w_suggestions.text = suggestions_text
+        else:
+            self.w_suggestions.text = "  Sin coincidencias"
 
     def _load_initial_contacts(self):
         for cn in self.db.get_all_contacts().keys():
