@@ -32,7 +32,8 @@ class ChatGUI:
             print(f"Error cargando ascii.json: {e}")
         
         self.w_contacts = TextArea(focusable=False, width=35)
-        self.w_chat = TextArea(text="", multiline=True, focusable=False, scrollbar=True, read_only=True, wrap_lines=True)
+        self._chat_control = FormattedTextControl(text="")
+        self.w_chat = ScrollablePane(Window(content=self._chat_control, wrap_lines=True))
         self.w_ascii = TextArea(height=3, prompt="> ", multiline=False,width=35)
         self.w_input = TextArea(height=3, prompt="> ", multiline=False)
         self.w_suggestions = TextArea(focusable=False, height=1, style="fg:ansigray")
@@ -83,6 +84,9 @@ class ChatGUI:
             'date-separator': 'fg:ansigray italic',
             'time-small': 'fg:ansigray',
             'time-small-sent': 'fg:#666666',
+            'msg-received': 'fg:#ff8800',  # Naranja para recibidos
+            'msg-sent': 'fg:#5599ff',      # Azul para enviados
+            'msg-system': 'fg:#888888',    # Gris para sistema
         })
         
         self.app = Application(layout=self.layout, key_bindings=kb, full_screen=True, mouse_support=True, style=custom_style)
@@ -212,9 +216,9 @@ class ChatGUI:
             lines.append("")
             if sender == "Sys":
                 center_pad = " " * max(0, (PAD_WIDTH - self._visual_len(text)) // 2)
-                lines.append(f"{center_pad}--- {text} ---")
+                lines.append(f"{center_pad}<msg-system>--- {text} ---</msg-system>")
             elif status == 'received' or sender != self.my_nick:
-                lines.append(f"[{formatted_time}] {sender}:")
+                lines.append(f"<msg-received>[{formatted_time}] {sender}:</msg-received>")
                 # Manejar mensajes multilínea (ASCII art)
                 for line in text.split('\n'):
                     lines.append(f" > {line}")
@@ -240,7 +244,7 @@ class ChatGUI:
                             line_content = f"{line}   {time_and_tick}"
                             visual_width = self._visual_len(line) + 3 + self._visual_len(time_and_tick)
                             padding = " " * max(0, PAD_WIDTH - visual_width)
-                            lines.append(f"{padding}{line}   {time_and_tick}")
+                            lines.append(f"{padding}{line}   <msg-sent>{time_and_tick}</msg-sent>")
                         else:
                             # Líneas intermedias sin timestamp
                             padding = " " * max(0, PAD_WIDTH - self._visual_len(line))
@@ -249,18 +253,13 @@ class ChatGUI:
                     # Mensaje de una sola línea
                     visual_width = self._visual_len(text) + 3 + self._visual_len(time_and_tick)
                     padding = " " * max(0, PAD_WIDTH - visual_width)
-                    lines.append(f"{padding}{text}   {time_and_tick}")
+                    lines.append(f"{padding}{text}   <msg-sent>{time_and_tick}</msg-sent>")
         return "\n".join(lines)
 
     def refresh_ui(self):
+        from prompt_toolkit.formatted_text import HTML
         chat_content = self._get_chat_content()
-        self.w_chat.text = chat_content
-        
-        try:
-            self.w_chat.buffer.cursor_position = len(chat_content)
-            self.w_chat.buffer.cursor_down(count=999999)
-        except:
-            pass
+        self._chat_control.text = HTML(chat_content)
         
         lines = []
         for k in self.contact_keys:
