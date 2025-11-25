@@ -2,95 +2,145 @@ import json
 import os
 import uuid
 import hashlib
-import base64
 from datetime import datetime
-from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 class JsonDatabase:
+    AES_KEY_SIZE = 32  # 256 bits para K_db
+    C_FILENAME = "C_value_chat.bin"
+    
     def __init__(self, dnie_manager):
         self.dnie_manager = dnie_manager
         self.data = {"contacts": {}}
-        self.challenge = None
-        self.key = None
         
         # Calcular nombre de archivo basado en el hash del número de serie
         serial = self.dnie_manager.get_serial_number()
-        serial_hash = hashlib.sha256(str(serial).encode()).hexdigest()
-        self.filepath = f"database_{serial_hash}.json"
+        serial_hash = hashlib.sha256(str(serial).encode()).hexdigest()[:16]
+        
+        # Archivos: igual que en el gestor de contraseñas
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        self.archivo_C = os.path.join(script_dir, self.C_FILENAME)
+        self.archivo_kdb = os.path.join(script_dir, f"kdb_enc_{serial_hash}.bin")
+        self.filepath = os.path.join(script_dir, f"database_{serial_hash}.json.enc")
+        
+        self.k_db_cache = None  # Caché para K_db
+        
+        # Inicializar C y K_db igual que el gestor
+        self.inicializar_C()
+        self.inicializar_kdb()
         
         self.load()
-
-    def _derive_key(self, signature):
-        # Derivar clave AES (Fernet) de 32 bytes desde la firma
-        # Usamos SHA256 para obtener 32 bytes
-        key_bytes = hashlib.sha256(signature).digest()
-        # Fernet necesita la clave en base64 url-safe
-        return base64.urlsafe_b64encode(key_bytes)
+    
+    def inicializar_C(self):
+        """Crea C de 64 bits si no existe"""
+        if os.path.exists(self.archivo_C):
+            return
+        C = os.urandom(8)  # 64 bits (8 bytes)
+        with open(self.archivo_C, "wb") as f:
+            f.write(C)
+    
+    def leer_C(self) -> bytes:
+        """Lee C del archivo"""
+        with open(self.archivo_C, "rb") as f:
+            data = f.read()
+        if len(data) != 8:
+            raise RuntimeError("Valor C inválido (longitud incorrecta).")
+        return data
+    
+    def inicializar_kdb(self):
+        """Crea K_db cifrada con K (derivada de firma de C)"""
+        if os.path.exists(self.archivo_kdb):
+            return
+        
+        # Crear K_db aleatoria de 256 bits
+        k_db = os.urandom(self.AES_KEY_SIZE)
+        
+        # Firmar C para obtener K
+        C = self.leer_C()
+        S = self.dnie_manager.sign_data(C)
+        K = hashlib.sha256(S).digest()
+        
+        # Cifrar K_db con K usando AES-GCM
+        aesgcm = AESGCM(K)
+        nonce = os.urandom(12)
+        ct = aesgcm.encrypt(nonce, k_db, associated_data=None)
+        
+        # Guardar nonce + ct
+        with open(self.archivo_kdb, "wb") as f:
+            f.write(nonce + ct)
+        
+        self.k_db_cache = k_db
+    
+    def descifrar_kdb(self) -> bytes:
+        """Descifra K_db usando firma del DNI"""
+        if self.k_db_cache is not None:
+            return self.k_db_cache
+        
+        if not os.path.exists(self.archivo_kdb):
+            raise RuntimeError("No existe la clave k_db cifrada para este DNI.")
+        
+        # Leer nonce + ct
+        with open(self.archivo_kdb, "rb") as f:
+            contenido = f.read()
+        nonce = contenido[:12]
+        ct = contenido[12:]
+        
+        # Firmar C para recuperar K
+        C = self.leer_C()
+        S = self.dnie_manager.sign_data(C)
+        K = hashlib.sha256(S).digest()
+        
+        # Descifrar K_db
+        aesgcm = AESGCM(K)
+        k_db = aesgcm.decrypt(nonce, ct, associated_data=None)
+        
+        self.k_db_cache = k_db
+        return k_db
 
     def load(self):
+        """Carga la base de datos cifrada con K_db (igual que gestor de contraseñas)"""
+        k_db = self.descifrar_kdb()
+        
         if not os.path.exists(self.filepath):
-            # Si no existe, creamos nuevo challenge y guardamos
-            self.challenge = os.urandom(4) # 32 bits = 4 bytes
-            print("Generando nuevo challenge para base de datos cifrada...")
-            
-            # Firmar challenge para obtener la clave
-            signature = self.dnie_manager.sign_data(self.challenge)
-            self.key = self._derive_key(signature)
-            
-            self.save()
+            self.data = {"contacts": {}}
             return
-
+        
         try:
-            with open(self.filepath, 'rb') as f:
-                content = f.read()
-                if not content:
-                    self.data = {"contacts": {}}
-                    return
-
-                # Parsear el contenedor JSON cifrado
-                container = json.loads(content)
-                self.challenge = bytes.fromhex(container["challenge"])
-                encrypted_data = container["data"]
-                
-                # Firmar el challenge almacenado para recuperar la clave
-                print("Firmando challenge para descifrar base de datos...")
-                signature = self.dnie_manager.sign_data(self.challenge)
-                self.key = self._derive_key(signature)
-                
-                # Descifrar
-                f = Fernet(self.key)
-                decrypted_json = f.decrypt(encrypted_data.encode()).decode('utf-8')
-                self.data = json.loads(decrypted_json)
-                
+            with open(self.filepath, "rb") as f:
+                contenido = f.read()
+            
+            if not contenido:
+                self.data = {"contacts": {}}
+                return
+            
+            # Descifrar con K_db usando AES-GCM
+            nonce = contenido[:12]
+            ct = contenido[12:]
+            aesgcm = AESGCM(k_db)
+            datos_bytes = aesgcm.decrypt(nonce, ct, associated_data=None)
+            self.data = json.loads(datos_bytes.decode("utf-8"))
+            
             if "contacts" not in self.data:
                 self.data["contacts"] = {}
-            self._clean_duplicates()
+            self.clean_duplicates()
         except Exception as e:
             print(f"Error al cargar DB cifrada: {e}")
-            # Si falla (ej. firma incorrecta), empezamos vacíos pero NO sobrescribimos el archivo original para no perder datos
             self.data = {"contacts": {}}
-            # Generamos nueva clave temporal para esta sesión para no crashear, 
-            # pero ojo: si guardamos, podríamos sobrescribir. 
-            # Mejor lanzar error o manejarlo. Por ahora, inicializamos vacio.
 
     def save(self):
+        """Guarda la base de datos cifrada con K_db (igual que gestor de contraseñas)"""
         try:
-            if not self.key:
-                # Si no tenemos clave (ej. fallo carga), no guardamos para no corromper
-                return
-
-            # Cifrar datos
-            json_str = json.dumps(self.data, ensure_ascii=False)
-            f = Fernet(self.key)
-            encrypted_data = f.encrypt(json_str.encode()).decode('utf-8')
+            k_db = self.descifrar_kdb()
             
-            container = {
-                "challenge": self.challenge.hex(),
-                "data": encrypted_data
-            }
+            # Cifrar con K_db usando AES-GCM
+            aesgcm = AESGCM(k_db)
+            nonce = os.urandom(12)
+            json_str = json.dumps(self.data, indent=2, ensure_ascii=False)
+            ct = aesgcm.encrypt(nonce, json_str.encode("utf-8"), associated_data=None)
             
-            with open(self.filepath, 'w', encoding='utf-8') as f:
-                json.dump(container, f, indent=2)
+            # Guardar nonce + ct
+            with open(self.filepath, "wb") as f:
+                f.write(nonce + ct)
         except Exception as e:
             print(f"Error al guardar DB: {e}")
 
@@ -231,7 +281,7 @@ class JsonDatabase:
             return bytes.fromhex(cert_hex)
         return None
 
-    def _clean_duplicates(self):
+    def clean_duplicates(self):
         contacts_to_remove = []
         contacts_by_name = {}
         for cn, info in list(self.data["contacts"].items()):

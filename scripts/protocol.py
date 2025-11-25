@@ -96,7 +96,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 self.callback(addr, "HANDSHAKE_OK", nombre, None)
             
             if not is_response:
-                self._enviar_paquete_credenciales(addr[0], addr[1], tipo=PKT_HANDSHAKE_RESP)
+                self.enviar_paquete_credenciales(addr[0], addr[1], tipo=PKT_HANDSHAKE_RESP)
                 
         except Exception as e:
             pass
@@ -148,7 +148,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 except Exception as e:
                     return False
         
-        self._enviar_paquete_credenciales(ip, port, tipo=PKT_HANDSHAKE_INIT)
+        self.enviar_paquete_credenciales(ip, port, tipo=PKT_HANDSHAKE_INIT)
         return False
 
     def cerrar_sesion(self, ip, port):
@@ -160,7 +160,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         addr = (ip, port)
         return addr in self.sessions
 
-    def _enviar_paquete_credenciales(self, ip, port, tipo):
+    def enviar_paquete_credenciales(self, ip, port, tipo):
         if not self.transport:
             return
         try:

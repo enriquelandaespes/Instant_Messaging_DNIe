@@ -8,7 +8,8 @@ from prompt_toolkit.layout import Layout, HSplit, VSplit, Window
 from prompt_toolkit.widgets import TextArea, Frame
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import ScrollablePane
+from prompt_toolkit.data_structures import Point
+from prompt_toolkit.styles import Style
 
 class ChatGUI:
     def __init__(self, protocol, my_nick, db):
@@ -21,6 +22,10 @@ class ChatGUI:
         self.pending_handshakes = set()
         self._timeout_check_task = None
         
+        # Variable para controlar el scroll seguro
+        self._last_line_count = 0
+        self._manual_scroll_offset = 0  # Offset manual para scroll
+        
         # Cargar ASCII art
         self.ascii_art = {}
         try:
@@ -31,23 +36,41 @@ class ChatGUI:
         except Exception as e:
             print(f"Error cargando ascii.json: {e}")
         
+        # --- Widgets ---
         self.w_contacts = TextArea(focusable=False, width=35)
-        self._chat_control = FormattedTextControl(text="")
-        self.w_chat = ScrollablePane(Window(content=self._chat_control, wrap_lines=True))
-        self.w_ascii = TextArea(height=3, prompt="> ", multiline=False,width=35)
+        
+        # Control de chat visual con FormattedTextControl
+        self.chat_control = FormattedTextControl(
+            text=self._get_chat_content,
+            get_cursor_position=self._get_safe_cursor_position,
+            focusable=False,
+            show_cursor=False
+        )
+        
+        self.w_chat_window = Window(
+            content=self.chat_control,
+            wrap_lines=True,
+            always_hide_cursor=True,
+            style="class:chat-bg",
+            allow_scroll_beyond_bottom=False,
+            dont_extend_height=False
+        )
+        
+        self.w_ascii = TextArea(height=3, prompt="> ", multiline=False, width=35)
         self.w_input = TextArea(height=3, prompt="> ", multiline=False)
         self.w_suggestions = TextArea(focusable=False, height=1, style="fg:ansigray")
         
         # Listener para autocompletado en tiempo real
         def on_ascii_text_changed(_):
-            self._update_ascii_suggestions()
+            self.update_ascii_suggestions()
         self.w_ascii.buffer.on_text_changed += on_ascii_text_changed
 
+        # --- Layout ---
         self.layout = Layout(
             HSplit([
                 VSplit([
                     Frame(self.w_contacts, title="👥 Contactos"),
-                    Frame(self.w_chat, title=self._get_chat_title)
+                    Frame(self.w_chat_window, title=self._get_chat_title)
                 ]),
                 VSplit([
                     HSplit([
@@ -60,110 +83,61 @@ class ChatGUI:
             focused_element=self.w_input
         )
 
+        # --- Estilos ---
+        style = Style.from_dict({
+            'chat-bg': '',
+            'msg-sent': "#C3C3C3",     
+            'msg-recv': '#ff8800',          # Naranja para recibidos
+            'msg-sys': '#888888 italic',    # Gris para sistema
+            'time': '#5599ff bold',              
+            'tick-sent': '#aaaaaa',         # Gris claro
+            'tick-read': '#00ff00 bold',    # Verde brillante
+        })
+
+        # --- Teclas ---
         kb = KeyBindings()
         @kb.add("c-c")
-        def _(event): event.app.exit()
+        def _(e): e.app.exit()
         @kb.add("up")
-        def _(event): self.move_selection(-1)
+        def _(e): self.move_selection(-1)
         @kb.add("down")
-        def _(event): self.move_selection(1)
+        def _(e): self.move_selection(1)
         @kb.add("enter")
-        def _(event): asyncio.create_task(self.handle_enter())
+        def _(e): asyncio.create_task(self.handle_enter())
         @kb.add("c-d")
-        def _(event): self.force_disconnect()
-        @kb.add("tab")
-        def _(event):
-            # Cambiar entre w_input y w_ascii
-            if event.app.layout.has_focus(self.w_input):
-                event.app.layout.focus(self.w_ascii)
-            else:
-                event.app.layout.focus(self.w_input)
-
-        from prompt_toolkit.styles import Style
-        custom_style = Style.from_dict({
-            'date-separator': 'fg:ansigray italic',
-            'time-small': 'fg:ansigray',
-            'time-small-sent': 'fg:#666666',
-            'msg-received': 'fg:#ff8800',  # Naranja para recibidos
-            'msg-sent': 'fg:#5599ff',      # Azul para enviados
-            'msg-system': 'fg:#888888',    # Gris para sistema
-        })
+        def _(e): self.force_disconnect()
         
-        self.app = Application(layout=self.layout, key_bindings=kb, full_screen=True, mouse_support=True, style=custom_style)
+        # TAB para cambiar entre w_input y w_ascii
+        @kb.add("tab")
+        def _(e):
+            if e.app.layout.has_focus(self.w_input):
+                e.app.layout.focus(self.w_ascii)
+            else:
+                e.app.layout.focus(self.w_input)
+
+        self.app = Application(layout=self.layout, key_bindings=kb, full_screen=True, mouse_support=True, style=style)
         self._load_initial_contacts()
 
-    def _format_timestamp(self, time_str, full_date_str=None):
-        try:
-            if full_date_str:
-                msg_datetime = datetime.strptime(full_date_str, "%Y-%m-%d %H:%M")
-            else:
-                msg_datetime = datetime.strptime(f"{datetime.now().strftime('%Y-%m-%d')} {time_str}", "%Y-%m-%d %H:%M")
-            now = datetime.now()
-            today = now.date()
-            msg_date = msg_datetime.date()
-            if msg_date == today:
-                return f"Hoy {time_str}"
-            elif msg_date == today - timedelta(days=1):
-                return f"Ayer {time_str}"
-            elif msg_date.year == today.year:
-                return msg_datetime.strftime(f"%d %b {time_str}")
-            else:
-                return msg_datetime.strftime(f"%d/%m/%y {time_str}")
-        except:
-            return time_str
-
-    def _visual_len(self, text):
-        """Calcula el ancho visual de una cadena, considerando emojis y caracteres especiales"""
-        width = 0
-        for char in text:
-            ea = unicodedata.east_asian_width(char)
-            if ea in ('F', 'W'):  # Fullwidth o Wide
-                width += 2
-            elif ea in ('Na', 'H', 'N', 'A'):  # Narrow, Halfwidth, Neutral, Ambiguous
-                width += 1
-            else:
-                width += 1
-        return width
-
-    def _update_ascii_suggestions(self):
-        """Muestra sugerencias de ASCII art mientras escribes"""
-        current_text = self.w_ascii.text.strip().lower()
-        if not current_text:
-            self.w_suggestions.text = ""
-            return
-        
-        # Buscar coincidencias
-        matches = [key for key in self.ascii_art.keys() if current_text in key.lower()]
-        
-        if matches:
-            # Mostrar hasta 5 sugerencias
-            suggestions_text = "  Sugerencias: " + ", ".join(matches[:5])
-            if len(matches) > 5:
-                suggestions_text += f" ... (+{len(matches)-5} más)"
-            self.w_suggestions.text = suggestions_text
-        else:
-            self.w_suggestions.text = "  Sin coincidencias"
+    def _get_safe_cursor_position(self):
+        # Devolver última línea para auto-scroll al final
+        return Point(x=0, y=max(0, self._last_line_count - 1))
 
     def _load_initial_contacts(self):
         for cn in self.db.get_all_contacts().keys():
-            if cn not in self.contact_keys:
-                self.contact_keys.append(cn)
+            if cn not in self.contact_keys: self.contact_keys.append(cn)
         self.contact_keys.sort()
         if self.contact_keys and self.current_cn is None:
             self.current_cn = self.contact_keys[0]
         self.refresh_ui()
 
     def _get_chat_title(self):
-        if not self.current_cn:
-            return "Chat Seguro"
+        if not self.current_cn: return "Chat Seguro"
         info = self.db.get_contact_info(self.current_cn)
         status = "🔴 OFFLINE"
-        if info and info.get("is_connected"):
-            status = "🟢 CONECTADO"
-        elif info and info.get("ip"):
-            status = "🟡 DISPONIBLE"
-        if self.current_cn in self.pending_handshakes:
-            status = "⏳ CONECTANDO..."
+        if info and info.get("is_connected"): status = "🟢 CONECTADO"
+        elif info and info.get("ip"): status = "🟡 DISPONIBLE"
+        if self.current_cn in self.pending_handshakes: status = "⏳ CONECTANDO..."
+        
         full_name = info.get("name", self.current_cn) if info else self.current_cn
         name_parts = full_name.split()
         if len(name_parts) >= 2:
@@ -183,84 +157,151 @@ class ChatGUI:
 
     def _get_chat_content(self):
         if not self.current_cn:
-            return "Esperando contactos..."
+            self._last_line_count = 1
+            return [("class:msg-sys", "Esperando contactos...")]
+        
         msgs = list(self.db.get_history(self.current_cn))
-        lines = []
+        formatted_lines = []
         PAD_WIDTH = 80
-        last_date = None
+        
+        # Contador seguro de líneas
+        current_lines = 0
+        
         for m in msgs:
             sender = m.get('sender')
             text = m.get('text')
-            timestamp_iso = m.get('timestamp')
+            timestamp_str = m.get('timestamp')
             status = m.get('status', '')
-            if timestamp_iso:
+            
+            # Obtener timestamp
+            if timestamp_str:
                 try:
-                    dt = datetime.fromisoformat(timestamp_iso)
+                    dt = datetime.fromisoformat(timestamp_str)
                     time = dt.strftime("%H:%M")
                     full_date = dt.strftime("%Y-%m-%d %H:%M")
                 except:
-                    time = timestamp_iso[:5] if len(timestamp_iso) >= 5 else "??:??"
+                    time = timestamp_str if len(timestamp_str) <= 5 else "??:??"
                     full_date = None
             else:
                 time = "??:??"
                 full_date = None
-            formatted_time = self._format_timestamp(time, full_date)
-            current_date = formatted_time.split()[0] if formatted_time and ' ' in formatted_time else None
-            if current_date and last_date != current_date and current_date != time:
-                if last_date is not None:
-                    lines.append("")
-                separator = f"- {current_date} -"
-                center_pad = " " * max(0, (PAD_WIDTH - len(separator)) // 2)
-                lines.append(f"{center_pad}{separator}")
-                last_date = current_date
-            lines.append("")
+            
+            formatted_time = self.format_timestamp(time, full_date)
+            
+            # Salto de línea previo
+            formatted_lines.append(("", "\n"))
+            current_lines += 1
+            
             if sender == "Sys":
-                center_pad = " " * max(0, (PAD_WIDTH - self._visual_len(text)) // 2)
-                lines.append(f"{center_pad}<msg-system>--- {text} ---</msg-system>")
+                # --- CENTRO (Sistema) ---
+                center_pad = " " * max(0, (PAD_WIDTH - self.visual_len(text)) // 2)
+                formatted_lines.append(("class:msg-sys", f"{center_pad}--- {text} ---"))
+                
             elif status == 'received' or sender != self.my_nick:
-                lines.append(f"<msg-received>[{formatted_time}] {sender}:</msg-received>")
-                # Manejar mensajes multilínea (ASCII art)
+                # --- IZQUIERDA (Recibidos) ---
+                formatted_lines.append(("class:msg-recv", f"[{formatted_time}] {sender}:\n"))
+                current_lines += 1
+                # Manejar mensajes multilínea
                 for line in text.split('\n'):
-                    lines.append(f" > {line}")
+                    formatted_lines.append(("class:msg-recv", f" > {line}\n"))
+                    current_lines += 1
+                    
             else:
-                if status == 'delivered':
-                    tick = "✅"
-                elif status == 'sent':
-                    tick = "🕒"
-                elif status == 'pending':
-                    tick = "🕒"
-                else:
-                    tick = "🕒"
+                # --- DERECHA (Enviados) ---
+                if status == 'delivered': tick = "✅"
+                elif status == 'sent': tick = "🕒"
+                else: tick = "🕒"
                 
-                time_and_tick = f"{formatted_time} {tick}"
-                
-                # Manejar mensajes multilínea (ASCII art enviados)
+                # Manejar mensajes multilínea
                 text_lines = text.split('\n')
                 if len(text_lines) > 1:
-                    # ASCII art multilínea - alinear cada línea a la derecha
                     for i, line in enumerate(text_lines):
                         if i == len(text_lines) - 1:
                             # Última línea con timestamp
-                            line_content = f"{line}   {time_and_tick}"
-                            visual_width = self._visual_len(line) + 3 + self._visual_len(time_and_tick)
-                            padding = " " * max(0, PAD_WIDTH - visual_width)
-                            lines.append(f"{padding}{line}   <msg-sent>{time_and_tick}</msg-sent>")
+                            line_content = f"{line}   {formatted_time} {tick}"
+                            padding = " " * max(0, PAD_WIDTH - self.visual_len(line_content))
+                            
+                            formatted_lines.append(("", padding))
+                            formatted_lines.append(("class:msg-sent", line))
+                            formatted_lines.append(("class:time", f"   {formatted_time} "))
+                            tick_style = "class:tick-read" if status == 'delivered' else "class:tick-sent"
+                            formatted_lines.append((tick_style, f"{tick}\n"))
+                            current_lines += 1
                         else:
-                            # Líneas intermedias sin timestamp
-                            padding = " " * max(0, PAD_WIDTH - self._visual_len(line))
-                            lines.append(f"{padding}{line}")
+                            padding = " " * max(0, PAD_WIDTH - self.visual_len(line))
+                            formatted_lines.append(("", padding + line + "\n"))
+                            current_lines += 1
                 else:
                     # Mensaje de una sola línea
-                    visual_width = self._visual_len(text) + 3 + self._visual_len(time_and_tick)
-                    padding = " " * max(0, PAD_WIDTH - visual_width)
-                    lines.append(f"{padding}{text}   <msg-sent>{time_and_tick}</msg-sent>")
-        return "\n".join(lines)
+                    line_content = f"{text}   {formatted_time} {tick}"
+                    padding = " " * max(0, PAD_WIDTH - self.visual_len(line_content))
+                    
+                    formatted_lines.append(("", padding))
+                    formatted_lines.append(("class:msg-sent", text))
+                    formatted_lines.append(("class:time", f"   {formatted_time} "))
+                    
+                    tick_style = "class:tick-read" if status == 'delivered' else "class:tick-sent"
+                    formatted_lines.append((tick_style, f"{tick}\n"))
+                    current_lines += 1
+        
+        self._last_line_count = current_lines
+        return formatted_lines
+
+    def format_timestamp(self, time_str, full_date_str=None):
+        try:
+            if full_date_str:
+                msg_datetime = datetime.strptime(full_date_str, "%Y-%m-%d %H:%M")
+            else:
+                msg_datetime = datetime.strptime(f"{datetime.now().strftime('%Y-%m-%d')} {time_str}", "%Y-%m-%d %H:%M")
+            now = datetime.now()
+            today = now.date()
+            msg_date = msg_datetime.date()
+            if msg_date == today:
+                return f"Hoy {time_str}"
+            elif msg_date == today - timedelta(days=1):
+                return f"Ayer {time_str}"
+            elif msg_date.year == today.year:
+                return msg_datetime.strftime(f"%d %b {time_str}")
+            else:
+                return msg_datetime.strftime(f"%d/%m/%y {time_str}")
+        except:
+            return time_str
+
+    def visual_len(self, text):
+        """Calcula el ancho visual de una cadena, considerando emojis y caracteres especiales"""
+        width = 0
+        for char in text:
+            ea = unicodedata.east_asian_width(char)
+            if ea in ('F', 'W'):  # Fullwidth o Wide
+                width += 2
+            elif ea in ('Na', 'H', 'N', 'A'):  # Narrow, Halfwidth, Neutral, Ambiguous
+                width += 1
+            else:
+                width += 1
+        return width
+
+    def update_ascii_suggestions(self):
+        """Muestra sugerencias de ASCII art mientras escribes"""
+        current_text = self.w_ascii.text.strip().lower()
+        if not current_text:
+            self.w_suggestions.text = ""
+            return
+        
+        # Buscar coincidencias
+        matches = [key for key in self.ascii_art.keys() if current_text in key.lower()]
+        
+        if matches:
+            # Mostrar hasta 5 sugerencias
+            suggestions_text = "  Sugerencias: " + ", ".join(matches[:5])
+            if len(matches) > 5:
+                suggestions_text += f" ... (+{len(matches)-5} más)"
+            self.w_suggestions.text = suggestions_text
+        else:
+            self.w_suggestions.text = "  Sin coincidencias"
+
+
 
     def refresh_ui(self):
-        from prompt_toolkit.formatted_text import HTML
-        chat_content = self._get_chat_content()
-        self._chat_control.text = HTML(chat_content)
-        
         lines = []
         for k in self.contact_keys:
             info = self.db.get_contact_info(k)
@@ -327,7 +368,7 @@ class ChatGUI:
 
     def on_protocol_msg(self, addr, text, real_cn, msg_id=None):
         if text == "SESSIONS_READY":
-            asyncio.create_task(self._auto_connect_and_send_all())
+            asyncio.create_task(self.auto_connect_and_send_all())
             return
         
         matching_contacts = []
@@ -437,9 +478,12 @@ class ChatGUI:
                 
                 msg_id = self.db.add_message(self.current_cn, self.my_nick, ascii_text, "sent", ts)
                 if not self.protocol.enviar_mensaje(ip, port, ascii_text, msg_id):
+                    # Si falla el envío, marcar como pendiente y desconectar
                     self.db.mark_message_status(self.current_cn, msg_id, "pending")
                     self.db.set_contact_connected(self.current_cn, False)
                     self.protocol.cerrar_sesion(ip, port)
+                    # Agregar mensaje de sistema indicando el problema
+                    self.db.add_message(self.current_cn, "Sys", "❌ Error al enviar ASCII - Usuario OFFLINE", "error", ts)
                 self.refresh_ui()
             return
         
@@ -473,9 +517,12 @@ class ChatGUI:
             msg_id = self.db.add_message(self.current_cn, self.my_nick, text, "sent", ts)
             self.w_input.text = ""
             if not self.protocol.enviar_mensaje(ip, port, text, msg_id):
+                # Si falla el envío, marcar como pendiente y desconectar
                 self.db.mark_message_status(self.current_cn, msg_id, "pending")
                 self.db.set_contact_connected(self.current_cn, False)
                 self.protocol.cerrar_sesion(ip, port)
+                # Agregar mensaje de sistema indicando el problema
+                self.db.add_message(self.current_cn, "Sys", "❌ Error al enviar - Usuario OFFLINE", "error", ts)
             self.refresh_ui()
 
     def force_disconnect(self):
@@ -489,7 +536,7 @@ class ChatGUI:
             self.db.add_message(self.current_cn, "Sys", "Desconectado manualmente", "system", ts)
             self.refresh_ui()
 
-    async def _auto_connect_and_send_all(self):
+    async def auto_connect_and_send_all(self):
         await asyncio.sleep(0.5)
         all_contacts = self.db.get_all_contacts()
         
@@ -516,7 +563,7 @@ class ChatGUI:
         
         self.refresh_ui()
 
-    async def _retry_pending_messages(self):
+    async def retry_pending_messages(self):
         await asyncio.sleep(2)
         
         while True:
@@ -548,7 +595,7 @@ class ChatGUI:
                         self.db.set_contact_connected(cn, True)
                         self.refresh_ui()
 
-    async def _check_ack_timeouts(self):
+    async def check_ack_timeouts(self):
         while True:
             await asyncio.sleep(2)
             for cn in list(self.contact_keys):
@@ -556,15 +603,27 @@ class ChatGUI:
                 if info and info.get("is_connected"):
                     has_timeout = self.db.check_message_timeouts(cn, timeout_seconds=5)
                     if has_timeout:
+                        # Si hay timeout, desconectar al usuario
+                        self.db.set_contact_connected(cn, False)
+                        ip = info.get("ip")
+                        port = info.get("port")
+                        if ip and port:
+                            self.protocol.cerrar_sesion(ip, port)
+                        
+                        # Marcar todos los mensajes "sent" como "pending"
                         msgs = self.db.get_history(cn)
                         for msg in msgs:
                             if msg.get("status") == "sent":
                                 self.db.mark_message_status(cn, msg["id"], "pending")
+                        
+                        # Agregar mensaje de sistema
+                        ts = datetime.now().strftime("%H:%M")
+                        self.db.add_message(cn, "Sys", "⏱️ Timeout - Sin respuesta del destinatario", "error", ts)
                         self.refresh_ui()
 
     async def run(self):
-        self._timeout_check_task = asyncio.create_task(self._check_ack_timeouts())
-        self._retry_task = asyncio.create_task(self._retry_pending_messages())
+        self._timeout_check_task = asyncio.create_task(self.check_ack_timeouts())
+        self._retry_task = asyncio.create_task(self.retry_pending_messages())
         
         try:
             await self.app.run_async()
