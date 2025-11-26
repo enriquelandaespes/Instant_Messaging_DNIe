@@ -48,7 +48,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             self.handle_reconnect(payload, addr)
 
     async def handle_handshake(self, payload, addr, is_response):
-        # Si YA tenemos sesión, ignorar
+        # Si ya tenemos sesión, ignorar
         if addr in self.sessions:
             return
         
@@ -77,19 +77,17 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             except:
                 nombre = "Error Certificado"
             
-            # Calcular clave compartida
             peer_key_obj = x25519.X25519PublicKey.from_public_bytes(peer_pub_bytes)
             shared_secret = self.dnie.private_key.exchange(peer_key_obj)
             session_key = hashlib.blake2s(shared_secret, digest_size=32).digest()
             
-            # Crear sesión
             self.sessions[addr] = {
                 'cipher': ChaCha20Poly1305(session_key),
                 'name': nombre,
                 'state': 'ESTABLISHED'
             }
             
-            # Buscar si ya existe un contacto con esta IP/puerto
+            # Buscar si ya existe contacto con esta IP/puerto
             existing_cn = None
             all_contacts = self.db.get_all_contacts()
             for cn, info in all_contacts.items():
@@ -97,7 +95,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                     existing_cn = cn
                     break
             
-            # Guardar contacto en BD con session_key
+            # Guardar en BD
             contact_id = existing_cn if existing_cn else nombre
             self.db.add_or_update_contact(
                 contact_id,
@@ -108,18 +106,15 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 peer_cert=cert_bytes.hex()
             )
             
-            # Notificar a GUI que el handshake completó
             if self.callback:
                 self.callback(addr, "HANDSHAKE_OK", nombre, None)
             
-            # IMPORTANTE: Si recibimos INIT, responder AUTOMÁTICAMENTE con RESP
+            # Si recibimos INIT, responder con RESP
             if not is_response:
                 self.enviar_paquete_credenciales(addr[0], addr[1], tipo=PKT_HANDSHAKE_RESP)
                 
-        except Exception as e:
+        except Exception:
             pass
-
-
 
     def handle_message(self, payload, addr):
         if addr not in self.sessions:
@@ -149,8 +144,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
 
     def enviar_handshake(self, ip, port, cn=None):
         """
-        Solo se llama cuando NO hay sesión en memoria.
-        Decide entre PKT_RECONNECT (si hay clave guardada) o PKT_HANDSHAKE_INIT (primera vez).
+        Decide si enviar PKT_RECONNECT (si hay session_key guardada) o PKT_HANDSHAKE_INIT (primera vez).
         """
         addr = (ip, port)
 
@@ -158,18 +152,18 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         if addr in self.sessions:
             return True
         
-        # Buscar session_key guardada (por CN o por IP/puerto)
+        # Buscar session_key guardada
         saved_key = None
         contact_name = None
         
-        # 1. Buscar por CN si viene
+        # 1. Buscar por CN
         if cn:
             contact_info = self.db.get_contact_info(cn)
             if contact_info:
                 saved_key = contact_info.get("session_key")
                 contact_name = contact_info.get("name", cn)
         
-        # 2. Si no hay clave, buscar por IP/puerto
+        # 2. Buscar por IP/puerto
         if not saved_key:
             all_contacts = self.db.get_all_contacts()
             for name, info in all_contacts.items():
@@ -179,7 +173,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                         contact_name = info.get("name", name)
                         break
         
-        # Si hay clave guardada: restaurar sesión local y enviar UNA SOLA VEZ PKT_RECONNECT
+        # Si hay clave guardada: restaurar sesión y enviar PKT_RECONNECT
         if saved_key:
             try:
                 if isinstance(saved_key, str):
@@ -187,27 +181,25 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 else:
                     session_key = saved_key
 
-                # Restaurar sesión en memoria local
                 self.sessions[addr] = {
                     'cipher': ChaCha20Poly1305(session_key),
                     'name': contact_name,
                     'state': 'ESTABLISHED'
                 }
                 
-                # Marcar como conectado
                 final_cn = cn if cn else contact_name
                 self.db.set_contact_connected(final_cn, True)
                 
                 if self.callback:
                     self.callback(addr, "SESSION_RESTORED", contact_name, None)
                 
-                # Enviar PKT_RECONNECT UNA SOLA VEZ para avisar al peer
+                # Enviar PKT_RECONNECT (sin credenciales)
                 self.enviar_reconnect(ip, port)
                 return True
             except Exception:
                 pass
         
-        # No hay clave guardada: hacer handshake inicial COMPLETO
+        # No hay clave: handshake inicial completo
         self.enviar_paquete_credenciales(ip, port, tipo=PKT_HANDSHAKE_INIT)
         return False
 
@@ -279,12 +271,10 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
 
     def handle_reconnect(self, payload, addr):
         """
-        Maneja PKT_RECONNECT recibido.
-        Si NO tenemos sesión: buscar clave en BD, restaurar sesión, responder con PKT_RECONNECT.
-        Si YA tenemos sesión: solo notificar (no reenviar PKT_RECONNECT para evitar loop).
+        Recibe PKT_RECONNECT: restaura sesión desde BD y responde con PKT_RECONNECT.
         """
         if addr not in self.sessions:
-            # No tenemos sesión: buscar en BD por IP/puerto
+            # Buscar contacto en BD por IP/puerto
             all_contacts = self.db.get_all_contacts()
             for cn, info in all_contacts.items():
                 if info.get('ip') == addr[0] and info.get('port') == addr[1]:
@@ -299,27 +289,24 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                             'state': 'ESTABLISHED'
                         }
                         self.db.set_contact_connected(cn, True)
+                        
+                        # Responder con PKT_RECONNECT
+                        self.enviar_reconnect(addr[0], addr[1])
+                        
                         if self.callback:
                             self.callback(addr, "SESSION_RESTORED", info.get("name", cn), None)
-                        
-                        # Responder con PKT_RECONNECT para confirmar (solo UNA VEZ)
-                        self.enviar_reconnect(addr[0], addr[1])
                         return
                     except Exception:
                         pass
-            # No se encontró clave: ignorar (el peer debería hacer handshake completo)
             return
         
-        # Ya tenemos sesión: solo notificar, NO reenviar PKT_RECONNECT
+        # Ya tenemos sesión: solo notificar
         session = self.sessions[addr]
         contact_name = session.get('name', 'Unknown')
         if self.callback:
             self.callback(addr, "PEER_RECONNECTED", contact_name, None)
 
     def enviar_reconnect(self, ip, port):
-        """
-        Envía PKT_RECONNECT (sin certificados ni claves).
-        """
         if not self.transport:
             return False
         addr = (ip, port)

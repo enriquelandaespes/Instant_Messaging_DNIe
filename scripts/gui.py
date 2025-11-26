@@ -469,7 +469,7 @@ class ChatGUI:
             asyncio.create_task(self.auto_connect_and_send_all())
             return
         
-        # Cuando se restaura/establece sesión, enviar mensajes pendientes SOLO de este contacto
+        # Cuando se restaura/establece sesión, enviar mensajes pendientes
         if text in ["SESSION_RESTORED", "HANDSHAKE_OK", "PEER_RECONNECTED"]:
             for cn, info in self.db.get_all_contacts().items():
                 if info.get("ip") == addr[0] and info.get("port") == addr[1]:
@@ -477,12 +477,11 @@ class ChatGUI:
                     if cn in self.pending_handshakes:
                         self.pending_handshakes.discard(cn)
                     
-                    # Enviar mensajes pendientes SOLO para este contacto que se reconectó
+                    # Enviar mensajes pendientes para este contacto
                     self.send_pending_messages(cn, addr[0], addr[1])
                     break
             self.refresh_ui()
             return
-
         
         matching_contacts = []
         all_contacts = self.db.get_all_contacts()
@@ -548,6 +547,26 @@ class ChatGUI:
         
         self.refresh_ui()
 
+    def send_pending_messages(self, cn, ip, port):
+        """
+        Envía todos los mensajes pendientes de un contacto específico.
+        """
+        pending = self.db.get_pending_messages(cn)
+        if not pending:
+            return
+        
+        if not self.protocol.tiene_sesion(ip, port):
+            return
+        
+        for msg in pending:
+            success = self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
+            if success:
+                self.db.mark_message_status(cn, msg['id'], "sent")
+            else:
+                break
+        
+        self.refresh_ui()
+
     async def handle_enter(self):
         if self.current_cn in ["__MI_CUENTA__", "__AYUDA__"]:
             return
@@ -565,7 +584,6 @@ class ChatGUI:
                 ip, port = info.get("ip"), info.get("port")
                 ts = datetime.now().strftime("%H:%M")
                 
-                # Si no hay sesión, intentar restaurar/conectar
                 if not ip or not self.protocol.tiene_sesion(ip, port):
                     self.db.add_message(self.current_cn, self.my_nick, ascii_text, "pending", ts)
                     if ip and port:
@@ -573,7 +591,6 @@ class ChatGUI:
                     self.refresh_ui()
                     return
                 
-                # Hay sesión: enviar
                 msg_id = self.db.add_message(self.current_cn, self.my_nick, ascii_text, "sent", ts)
                 if not self.protocol.enviar_mensaje(ip, port, ascii_text, msg_id):
                     self.db.mark_message_status(self.current_cn, msg_id, "pending")
@@ -599,7 +616,6 @@ class ChatGUI:
             self.refresh_ui()
             return
         
-        # Si no hay sesión, intentar restaurar/conectar
         if not self.protocol.tiene_sesion(ip, port):
             if text:
                 self.db.add_message(self.current_cn, self.my_nick, text, "pending", ts)
@@ -611,7 +627,6 @@ class ChatGUI:
                 self.refresh_ui()
             return
         
-        # Hay sesión: enviar
         if text:
             msg_id = self.db.add_message(self.current_cn, self.my_nick, text, "sent", ts)
             self.scroll_offset = 0
@@ -636,7 +651,6 @@ class ChatGUI:
     async def auto_connect_and_send_all(self):
         """
         Al arrancar, envía PKT_RECONNECT a TODOS los contactos conocidos.
-        Cuando cada uno responda, se enviarán sus mensajes pendientes.
         """
         await asyncio.sleep(0.5)
         all_contacts = list(self.db.get_all_contacts().items())
@@ -647,17 +661,13 @@ class ChatGUI:
             if not ip or not port:
                 continue
             
-            # Restaura sesión local y envía PKT_RECONNECT
+            # Decide automáticamente: PKT_RECONNECT si hay clave, handshake si no
             self.protocol.enviar_handshake(ip, port, cn=cn)
             await asyncio.sleep(0.1)
         
         self.refresh_ui()
 
-
     async def check_ack_timeouts(self):
-        """
-        Controla timeouts de ACKs y desconecta si no hay respuesta.
-        """
         while True:
             await asyncio.sleep(2)
             for cn in list(self.contact_keys):
