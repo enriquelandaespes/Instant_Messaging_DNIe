@@ -550,21 +550,38 @@ class ChatGUI:
         self.refresh_ui()
 
     def send_pending_messages(self, cn, ip, port):
+        """
+        Envía todos los mensajes pendientes de un contacto específico.
+        Añade pequeño delay entre mensajes para evitar saturación.
+        """
         pending = self.db.get_pending_messages(cn)
         if not pending:
             return
-        
+    
         if not self.protocol.tiene_sesion(ip, port):
             return
-        
-        for msg in pending:
-            success = self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
-            if success:
-                self.db.mark_message_status(cn, msg['id'], "sent")
-            else:
-                break
+    
+        async def send_all():
+            for msg in pending:
+                success = self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
+                if success:
+                    self.db.mark_message_status(cn, msg['id'], "sent")
+                    # Pequeño delay entre mensajes para no saturar
+                    await asyncio.sleep(0.1)
+                else:
+                    # Si falla, esperar un poco y reintentar UNA vez
+                    await asyncio.sleep(0.2)
+                    success = self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
+                    if success:
+                        self.db.mark_message_status(cn, msg['id'], "sent")
+                    else:
+                        # Si falla de nuevo, dejar como pending y parar
+                        break
         
         self.refresh_ui()
+    
+    asyncio.create_task(send_all())
+
 
     async def handle_enter(self):
         if self.current_cn in ["__MI_CUENTA__", "__AYUDA__"]:
