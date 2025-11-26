@@ -1,4 +1,3 @@
-# gui.py - VERSIÓN CORREGIDA CON CAMBIOS MÍNIMOS
 import asyncio
 import json
 import os
@@ -628,37 +627,6 @@ class ChatGUI:
                     self.scroll_offset = 0
         
         self.refresh_ui()
-
-    async def _auto_retry_pending(self):
-        """Reintenta enviar mensajes pendientes cada 3 segundos"""
-        while True:
-            await asyncio.sleep(3)
-            
-            # Revisar todos los contactos con mensajes pendientes
-            for cn in list(self.contact_keys):
-                pending = self.db.get_pending_messages(cn)
-                if not pending:
-                    continue
-                
-                info = self.db.get_contact_info(cn)
-                if not info:
-                    continue
-                
-                ip = info.get("ip")
-                port = info.get("port")
-                if not ip or not port:
-                    continue
-                
-                # CAMBIO 1: Pasar cn a enviar_handshake
-                if not self.protocol.tiene_sesion(ip, port):
-                    self.protocol.enviar_handshake(ip, port, cn=cn)
-                    await asyncio.sleep(0.5)  # Esperar a que se restaure/establezca
-                
-                # Intentar enviar los pendientes si ahora hay sesión
-                if self.protocol.tiene_sesion(ip, port):
-                    self.check_pending_messages(cn, ip, port)
-            
-            self.refresh_ui()
     
     def check_pending_messages(self, cn, ip, port):
         pending = self.db.get_pending_messages(cn)
@@ -740,7 +708,7 @@ class ChatGUI:
                 self.scroll_offset = 0  # Auto-scroll al final
                 self.w_input.text = ""
             if self.current_cn not in self.pending_handshakes:
-                # CAMBIO 2: Pasar self.current_cn a enviar_handshake
+                # FIX: Pasar self.current_cn (ID) en lugar del nombre para que encuentre la session_key
                 self.protocol.enviar_handshake(ip, port, cn=self.current_cn)
                 self.pending_handshakes.add(self.current_cn)
                 self.refresh_ui()
@@ -781,43 +749,11 @@ class ChatGUI:
             if not ip or not port:
                 continue
             
-            # CAMBIO 3: Pasar cn a enviar_handshake
+            # Intentar restaurar sesión desde BD y enviar PKT_RECONNECT
             self.protocol.enviar_handshake(ip, port, cn=cn)
             await asyncio.sleep(0.1)
         
         self.refresh_ui()
-
-    async def retry_pending_messages(self):
-        await asyncio.sleep(2)
-        
-        while True:
-            await asyncio.sleep(3)
-            
-            for cn in list(self.contact_keys):
-                info = self.db.get_contact_info(cn)
-                if not info:
-                    continue
-                    
-                ip = info.get("ip")
-                port = info.get("port")
-                
-                if not ip or not port:
-                    continue
-                
-                pending = self.db.get_pending_messages(cn)
-                if not pending:
-                    continue
-                
-                if self.protocol.tiene_sesion(ip, port):
-                    enviados = 0
-                    for msg in pending:
-                        if self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id']):
-                            self.db.mark_message_status(cn, msg['id'], "sent")
-                            enviados += 1
-                    
-                    if enviados > 0:
-                        self.db.set_contact_connected(cn, True)
-                        self.refresh_ui()
 
     async def check_ack_timeouts(self):
         while True:
@@ -846,7 +782,6 @@ class ChatGUI:
 
     async def run(self):
         self._timeout_check_task = asyncio.create_task(self.check_ack_timeouts())
-        self._retry_task = asyncio.create_task(self._auto_retry_pending())
         
         try:
             await self.app.run_async()
@@ -855,11 +790,5 @@ class ChatGUI:
                 self._timeout_check_task.cancel()
                 try:
                     await self._timeout_check_task
-                except asyncio.CancelledError:
-                    pass
-            if self._retry_task:
-                self._retry_task.cancel()
-                try:
-                    await self._retry_task
                 except asyncio.CancelledError:
                     pass
