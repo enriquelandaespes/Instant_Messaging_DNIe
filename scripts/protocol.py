@@ -263,7 +263,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         """
         Recibe PKT_RECONNECT: restaura sesión desde BD y responde con PKT_RECONNECT.
         """
-        # CASO 1: Confirmación a mi PKT_RECONNECT
+        # CASO 1: Confirmación a mi PKT_RECONNECT (yo inicié)
         if addr in self.reconnect_pending:
             info = self.reconnect_pending.pop(addr)
             cn = info['cn']
@@ -272,6 +272,10 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 session = self.sessions[addr]
                 contact_name = session.get('name', 'Unknown')
                 self.db.set_contact_connected(cn, True)
+                
+                # Pequeño delay para asegurar que ambos lados están listos
+                await asyncio.sleep(0.5)
+                
                 if self.callback:
                     self.callback(addr, "SESSION_RESTORED", contact_name, None)
             return
@@ -296,8 +300,8 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                         # Responder con PKT_RECONNECT
                         self.enviar_reconnect(addr[0], addr[1])
                         
-                        # Sleep de 3 segundos ASYNC para fijar sesión
-                        await asyncio.sleep(3)
+                        # Pequeño delay para asegurar que ambos lados están listos
+                        await asyncio.sleep(0.5)
                         
                         if self.callback:
                             self.callback(addr, "SESSION_RESTORED", info.get("name", cn), None)
