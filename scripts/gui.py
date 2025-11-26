@@ -589,7 +589,14 @@ class ChatGUI:
             ack_msg_id = text.split('|', 1)[1]
             self.db.mark_message_status(contact_id, ack_msg_id, "delivered")
         else:
+            # Marcar como conectado y verificar si necesitamos reenviar pendientes
+            was_disconnected = not self.db.get_contact_info(contact_id).get("is_connected", False)
             self.db.set_contact_connected(contact_id, True)
+            
+            # Si estaba desconectado y ahora recibimos mensaje, reenviar pendientes
+            if was_disconnected and addr:
+                self.check_pending_messages(contact_id, addr[0], addr[1])
+            
             received_msg_id = self.db.add_message(contact_id, real_cn, text, "received", ts, msg_id=msg_id)
             if self.current_cn == contact_id:
                 self.db.mark_message_as_read_by_id(contact_id, received_msg_id)
@@ -604,13 +611,16 @@ class ChatGUI:
         if not pending:
             return
         
+        # Verificar que tenemos sesión antes de intentar enviar
+        if not self.protocol.tiene_sesion(ip, port):
+            return
+        
         for msg in pending:
-            if self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id']):
+            success = self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
+            if success:
                 self.db.mark_message_status(cn, msg['id'], "sent")
             else:
-                info = self.db.get_contact_info(cn)
-                contact_name = info.get("name", cn) if info else cn
-                self.protocol.enviar_handshake(ip, port, cn=contact_name)
+                # Si falla alguno, detenerse para no perder orden
                 break
         
         self.refresh_ui()
