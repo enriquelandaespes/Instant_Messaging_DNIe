@@ -25,6 +25,7 @@ class ChatGUI:
         self._timeout_check_task = None
         self._reconnect_timeout_task = None
         self.sending_pending = set()
+        self._respondedor_esperando_done = {}
         
         self._last_line_count = 0
         self.scroll_offset = 0
@@ -402,7 +403,6 @@ class ChatGUI:
             if not info:
                 continue
             
-            # LÓGICA PERFECTA
             if info.get("is_connected"):
                 icon = "🟢"
             elif info.get("session_key"):
@@ -523,29 +523,26 @@ class ChatGUI:
             user_msgs = [m for m in msgs if m.get('sender') != "Sys"]
             if len(user_msgs) == 0:
                 self.db.add_message(contact_id, "Sys", "🔒 Conexión segura establecida", "system", ts)
-            # Avisa que voy a enviar pendientes
             self.protocol.enviar_pending_send(addr[0], addr[1])
-            self.send_pending_messages(contact_id, addr[0], addr[1])
+            self.send_pending_messages(contact_id, addr[0], addr[1], lambda: self.protocol.enviar_pending_done(addr[0], addr[1]))
         
         elif text == "SESSION_RESTORED_INIT":
             self.db.set_contact_connected(contact_id, True)
-            # Avisa que voy a enviar pendientes
             self.protocol.enviar_pending_send(addr[0], addr[1])
-            self.send_pending_messages(contact_id, addr[0], addr[1])
+            self.send_pending_messages(contact_id, addr[0], addr[1], lambda: self.protocol.enviar_pending_done(addr[0], addr[1]))
         
         elif text == "SESSION_RESTORED_RESP":
             self.db.set_contact_connected(contact_id, True)
-            # El respondedor espera a PEER_SENDING_PENDING
+            self._respondedor_esperando_done[contact_id] = False
         
         elif text == "PEER_SENDING_PENDING":
-            # El peer está enviando sus pendientes, yo solo recibo
-            pass
+            self._respondedor_esperando_done[contact_id] = True
         
         elif text == "SEND_MY_PENDING":
-            # El peer terminó, ahora envío los míos
-            # Avisa que voy a enviar
-            self.protocol.enviar_pending_send(addr[0], addr[1])
-            self.send_pending_messages(contact_id, addr[0], addr[1])
+            if self._respondedor_esperando_done.get(contact_id):
+                del self._respondedor_esperando_done[contact_id]
+                self.protocol.enviar_pending_send(addr[0], addr[1])
+                self.send_pending_messages(contact_id, addr[0], addr[1], lambda: self.protocol.enviar_pending_done(addr[0], addr[1]))
         
         elif text == "RECONNECT_TIMEOUT":
             self.db.set_contact_connected(contact_id, False)
@@ -563,7 +560,6 @@ class ChatGUI:
             self.db.mark_message_status(contact_id, ack_msg_id, "delivered")
         
         else:
-            # MENSAJE NORMAL
             self.db.set_contact_connected(contact_id, True)
             received_msg_id = self.db.add_message(contact_id, real_cn, text, "received", ts, msg_id=msg_id)
             if self.current_cn == contact_id:
@@ -571,14 +567,12 @@ class ChatGUI:
         
         self.refresh_ui()
 
-
-
-    def send_pending_messages(self, cn, ip, port):
-        """Envía todos los mensajes pendientes y luego manda PENDING_DONE"""
+    def send_pending_messages(self, cn, ip, port, callback=None):
+        """Envía todos los mensajes pendientes"""
         pending = self.db.get_pending_messages(cn)
         if not pending or cn in self.sending_pending:
-            # Si no hay pendientes, igual envía DONE
-            self.protocol.enviar_pending_done(ip, port)
+            if callback:
+                callback()
             return
         
         if not self.protocol.tiene_sesion(ip, port):
@@ -601,12 +595,11 @@ class ChatGUI:
                         break
             
             self.sending_pending.discard(cn)
-            # IMPORTANTE: Avisa que terminé
-            self.protocol.enviar_pending_done(ip, port)
             self.refresh_ui()
+            if callback:
+                callback()
         
         asyncio.create_task(send_all_async())
-
 
     async def handle_enter(self):
         if self.current_cn in ["__MI_CUENTA__", "__AYUDA__"]:
