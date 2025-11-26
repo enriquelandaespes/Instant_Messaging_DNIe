@@ -273,9 +273,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 contact_name = session.get('name', 'Unknown')
                 self.db.set_contact_connected(cn, True)
                 
-                # Pequeño delay para asegurar que ambos lados están listos
-                await asyncio.sleep(0.5)
-                
                 if self.callback:
                     self.callback(addr, "SESSION_RESTORED", contact_name, None)
             return
@@ -297,14 +294,10 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                         }
                         self.db.set_contact_connected(cn, True)
                         
-                        # Responder con PKT_RECONNECT
                         self.enviar_reconnect(addr[0], addr[1])
                         
-                        # Pequeño delay para asegurar que ambos lados están listos
-                        await asyncio.sleep(0.5)
-                        
                         if self.callback:
-                            self.callback(addr, "SESSION_RESTORED", info.get("name", cn), None)
+                            self.callback(addr, "SESSION_RESTORED_WAIT", info.get("name", cn), None)
                         return
                     except Exception:
                         pass
@@ -336,17 +329,14 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             return False
 
     async def check_reconnect_timeouts(self):
-        """
-        Verifica si hay reconexiones pendientes que no respondieron en 5 segundos.
-        """
         while True:
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1)
             
             current_time = asyncio.get_event_loop().time()
             timeout_addrs = []
             
             for addr, info in list(self.reconnect_pending.items()):
-                if current_time - info['timestamp'] > 0.5:
+                if current_time - info['timestamp'] > 5:
                     timeout_addrs.append(addr)
             
             for addr in timeout_addrs:

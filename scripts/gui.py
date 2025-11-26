@@ -25,7 +25,6 @@ class ChatGUI:
         self._timeout_check_task = None
         self._reconnect_timeout_task = None
         self.sending_pending = set()
-        self.need_to_send_after_receive = set()
         
         self._last_line_count = 0
         self.scroll_offset = 0
@@ -515,10 +514,24 @@ class ChatGUI:
                 self.db.add_message(contact_id, "Sys", "🔒 Conexión segura establecida", "system", ts)
             self.send_pending_messages(contact_id, addr[0], addr[1])
         
-        # SESSION_RESTORED o PEER_RECONNECTED: enviar inmediatamente
-        elif text in ("SESSION_RESTORED", "PEER_RECONNECTED"):
+        # SESSION_RESTORED: soy el INICIADOR, envío inmediatamente
+        elif text == "SESSION_RESTORED":
             self.db.set_contact_connected(contact_id, True)
             self.send_pending_messages(contact_id, addr[0], addr[1])
+        
+        # SESSION_RESTORED_WAIT: soy el RESPONDEDOR, espero 1.5s antes de enviar
+        elif text == "SESSION_RESTORED_WAIT":
+            self.db.set_contact_connected(contact_id, True)
+            
+            async def delayed_send():
+                await asyncio.sleep(1.5)
+                self.send_pending_messages(contact_id, addr[0], addr[1])
+            
+            asyncio.create_task(delayed_send())
+        
+        # PEER_RECONNECTED
+        elif text == "PEER_RECONNECTED":
+            self.db.set_contact_connected(contact_id, True)
         
         # RECONNECT_TIMEOUT
         elif text == "RECONNECT_TIMEOUT":
@@ -547,8 +560,6 @@ class ChatGUI:
                     self.scroll_offset = 0
         
         self.refresh_ui()
-
-
 
     def send_pending_messages(self, cn, ip, port):
         """
