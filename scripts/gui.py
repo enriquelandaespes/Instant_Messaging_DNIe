@@ -1,3 +1,4 @@
+# gui.py - VERSIÓN CORREGIDA CON CAMBIOS MÍNIMOS
 import asyncio
 import json
 import os
@@ -648,7 +649,7 @@ class ChatGUI:
                 if not ip or not port:
                     continue
                 
-                # Intentar handshake/reconnect si no hay sesión
+                # CAMBIO 1: Pasar cn a enviar_handshake
                 if not self.protocol.tiene_sesion(ip, port):
                     self.protocol.enviar_handshake(ip, port, cn=cn)
                     await asyncio.sleep(0.5)  # Esperar a que se restaure/establezca
@@ -739,7 +740,7 @@ class ChatGUI:
                 self.scroll_offset = 0  # Auto-scroll al final
                 self.w_input.text = ""
             if self.current_cn not in self.pending_handshakes:
-                # FIX: Pasar self.current_cn (ID) en lugar del nombre para que encuentre la session_key
+                # CAMBIO 2: Pasar self.current_cn a enviar_handshake
                 self.protocol.enviar_handshake(ip, port, cn=self.current_cn)
                 self.pending_handshakes.add(self.current_cn)
                 self.refresh_ui()
@@ -780,7 +781,7 @@ class ChatGUI:
             if not ip or not port:
                 continue
             
-            # Intentar restaurar sesión desde BD y enviar PKT_RECONNECT
+            # CAMBIO 3: Pasar cn a enviar_handshake
             self.protocol.enviar_handshake(ip, port, cn=cn)
             await asyncio.sleep(0.1)
         
