@@ -466,96 +466,88 @@ class ChatGUI:
         self.refresh_ui()
 
     def on_protocol_msg(self, addr, text, real_cn, msg_id=None):
+        """
+        Maneja los eventos que vienen del protocolo (handshake, reconnect, ACK, etc).
+        según el tipo de evento recibido, actualiza el estado del contacto y decide si
+        debe enviar mensajes pendientes, mostrar avisos, etc.
+        """
+
+        # Caso especial: arranque del sistema
         if text == "SESSIONS_READY":
             asyncio.create_task(self.auto_connect_and_send_all())
             return
-        
-        # Cuando se restaura/establece sesión, enviar mensajes pendientes
-        if text in ["SESSION_RESTORED", "HANDSHAKE_OK", "PEER_RECONNECTED"]:
-            for cn, info in self.db.get_all_contacts().items():
-                if info.get("ip") == addr[0] and info.get("port") == addr[1]:
-                    self.db.set_contact_connected(cn, True)
-                    if cn in self.pending_handshakes:
-                        self.pending_handshakes.discard(cn)
-                    
-                    # Enviar mensajes pendientes para este contacto
-                    self.send_pending_messages(cn, addr[0], addr[1])
-                    break
-            self.refresh_ui()
-            return
-        
-        # Timeout de reconexión: marcar como desconectado
-        if text == "RECONNECT_TIMEOUT":
-            # real_cn contiene el nombre del contacto que no respondió
-            self.db.set_contact_connected(real_cn, False)
-            if real_cn in self.pending_handshakes:
-                self.pending_handshakes.discard(real_cn)
-            self.refresh_ui()
-            return
-        
-        matching_contacts = []
-        all_contacts = self.db.get_all_contacts()
-        
-        for cn, info in all_contacts.items():
-            if (info.get("ip") == addr[0] and info.get("port") == addr[1]) or info.get("name") == real_cn:
-                matching_contacts.append(cn)
-        
-        if len(matching_contacts) > 1:
-            contact_id = matching_contacts[0]
-            for dup_cn in matching_contacts[1:]:
-                if dup_cn in self.contact_keys:
-                    self.contact_keys.remove(dup_cn)
-                if dup_cn in self.pending_handshakes:
-                    self.pending_handshakes.remove(dup_cn)
-                dup_info = self.db.get_contact_info(dup_cn)
-                if dup_info and dup_info.get("msgs"):
-                    main_info = self.db.get_contact_info(contact_id)
-                    if main_info:
-                        main_info["msgs"].extend(dup_info["msgs"])
-                if dup_cn in self.db.data["contacts"]:
-                    del self.db.data["contacts"][dup_cn]
-            self.db.save()
-        elif len(matching_contacts) == 1:
-            contact_id = matching_contacts[0]
-        else:
+
+        # Busca cuál es el contacto asociado a addr (IP, puerto)
+        contact_id = None
+        for cn, info in self.db.get_all_contacts().items():
+            if info.get("ip") == addr[0] and info.get("port") == addr[1]:
+                contact_id = cn
+                break
+        if not contact_id:
             contact_id = f"{addr[0]}:{addr[1]}"
-        
+
+        # Eliminar del pending_handshakes si estaba ahí
         if contact_id in self.pending_handshakes:
-            self.pending_handshakes.remove(contact_id)
-        
+            self.pending_handshakes.discard(contact_id)
+
+        # En todos los casos, actualiza el contacto con los nuevos datos
         self.db.add_or_update_contact(contact_id, name=real_cn, ip=addr[0], port=addr[1])
         if contact_id not in self.contact_keys:
             self.contact_keys.append(contact_id)
             self.contact_keys.sort()
- 
+
         ts = datetime.now().strftime("%H:%M")
-        
+
+        # --- HANDSHAKE OK ---
         if text == "HANDSHAKE_OK":
             self.db.set_contact_connected(contact_id, True)
             msgs = self.db.get_history(contact_id)
             user_msgs = [m for m in msgs if m.get('sender') != "Sys"]
             if len(user_msgs) == 0:
                 self.db.add_message(contact_id, "Sys", "🔒 Conexión segura establecida", "system", ts)
+
+        # --- RECONECT: Yo soy quien debe enviar los mensajes pendientes (initia "SESSION_RESTORED_SEND") ---
+        elif text == "SESSION_RESTORED_SEND":
+            self.db.set_contact_connected(contact_id, True)
+            # Enviamos SOLO aquí los mensajes pendientes de este contacto
+            self.send_pending_messages(contact_id, addr[0], addr[1])
+
+        # --- RECONECT: Solo actualiza el estado, no envía ---
         elif text == "SESSION_RESTORED":
             self.db.set_contact_connected(contact_id, True)
+
+        # --- El otro nos confirma propia reconexión, sin acción salvo refrescar estado ---
         elif text == "PEER_RECONNECTED":
             self.db.set_contact_connected(contact_id, True)
+
+        # --- Si el timeout de reconexión expira, marca como desconectado ---
+        elif text == "RECONNECT_TIMEOUT":
+            self.db.set_contact_connected(contact_id, False)
+            self.refresh_ui()
+            return
+
         elif text.startswith("HANDSHAKE_ERROR"):
             self.db.set_contact_connected(contact_id, False)
+
         elif text == "ERROR_DESCIFRADO":
+            # También podrías mostrar alerta...
             pass
+
         elif text.startswith("ACK|"):
             ack_msg_id = text.split('|', 1)[1]
             self.db.mark_message_status(contact_id, ack_msg_id, "delivered")
+
         else:
+            # Mensaje normal recibido
             self.db.set_contact_connected(contact_id, True)
             received_msg_id = self.db.add_message(contact_id, real_cn, text, "received", ts, msg_id=msg_id)
             if self.current_cn == contact_id:
                 self.db.mark_message_as_read_by_id(contact_id, received_msg_id)
                 if self.scroll_offset == 0:
                     self.scroll_offset = 0
-        
+
         self.refresh_ui()
+
 
     def send_pending_messages(self, cn, ip, port):
         """
