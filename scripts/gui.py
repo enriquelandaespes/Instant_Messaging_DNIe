@@ -514,7 +514,10 @@ class ChatGUI:
                 if info.get("name") == name:
                     existing_cn = cn
                     break
+        
+        # Determinar el contact_id final
         if existing_cn:
+            contact_id = existing_cn
             self.db.add_or_update_contact(existing_cn, name=name, ip=ip, port=port)
         else:
             contact_id = f"{ip}:{port}"
@@ -524,6 +527,15 @@ class ChatGUI:
                 self.contact_keys.sort()
             if not self.current_cn:
                 self.current_cn = contact_id
+        
+        # Si hay mensajes pendientes, intentar conectar y enviar
+        pending = self.db.get_pending_messages(contact_id)
+        if pending:
+            # Intentar handshake si no hay sesión
+            if not self.protocol.tiene_sesion(ip, port):
+                self.protocol.enviar_handshake(ip, port, cn=contact_id)
+                self.pending_handshakes.add(contact_id)
+        
         self.refresh_ui()
 
     def on_protocol_msg(self, addr, text, real_cn, msg_id=None):
