@@ -525,18 +525,14 @@ class ChatGUI:
                 self.db.add_message(contact_id, "Sys", "🔒 Conexión segura establecida", "system", ts)
             self.send_pending_messages(contact_id, addr[0], addr[1])
         
-        # INICIADOR: se conectó y ya tiene sesión, envía pendientes YA
+        # SESSION RESTAURADA: ambos envían pendientes YA, sin esperar nada
         elif text == "SESSION_RESTORED_INIT":
             self.db.set_contact_connected(contact_id, True)
             self.send_pending_messages(contact_id, addr[0], addr[1])
         
-        # RESPONDEDOR: se conectó, espera a recibir mensajes del iniciador
         elif text == "SESSION_RESTORED_RESP":
             self.db.set_contact_connected(contact_id, True)
-            # Marca que este contact es respondedor para luego saber cuándo enviar
-            if not hasattr(self, '_respondedor_esperando'):
-                self._respondedor_esperando = set()
-            self._respondedor_esperando.add(contact_id)
+            self.send_pending_messages(contact_id, addr[0], addr[1])
         
         elif text == "RECONNECT_TIMEOUT":
             self.db.set_contact_connected(contact_id, False)
@@ -554,18 +550,9 @@ class ChatGUI:
             self.db.mark_message_status(contact_id, ack_msg_id, "delivered")
         
         else:
-            # MENSAJE NORMAL RECIBIDO
+            # MENSAJE NORMAL
             self.db.set_contact_connected(contact_id, True)
             received_msg_id = self.db.add_message(contact_id, real_cn, text, "received", ts, msg_id=msg_id)
-            
-            # SI SOY RESPONDEDOR Y ESTOY ESPERANDO: ahora envío mis pendientes
-            if not hasattr(self, '_respondedor_esperando'):
-                self._respondedor_esperando = set()
-            
-            if contact_id in self._respondedor_esperando:
-                self._respondedor_esperando.discard(contact_id)
-                self.send_pending_messages(contact_id, addr[0], addr[1])
-            
             if self.current_cn == contact_id:
                 self.db.mark_message_as_read_by_id(contact_id, received_msg_id)
         
