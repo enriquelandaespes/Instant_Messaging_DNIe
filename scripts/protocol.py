@@ -346,7 +346,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             timeout_addrs = []
             
             for addr, info in list(self.reconnect_pending.items()):
-                if current_time - info['timestamp'] > 5:
+                if current_time - info['timestamp'] > 0.5:
                     timeout_addrs.append(addr)
             
             for addr in timeout_addrs:
