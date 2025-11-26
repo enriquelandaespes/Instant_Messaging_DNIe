@@ -24,7 +24,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         self.sessions = {}
         self.my_cid = os.urandom(4)
         self.handshake_in_progress = {}
-        self.reconnect_pending = {}  # Tracking de reconexiones pendientes
+        self.reconnect_pending = {}
 
     def connection_made(self, transport):
         self.transport = transport
@@ -195,8 +195,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                     'timestamp': asyncio.get_event_loop().time()
                 }
                 
-                if self.callback:
-                    self.callback(addr, "SESSION_RESTORED", contact_name, None)
+                # NO notificar SESSION_RESTORED aquí, esperar confirmación
                 
                 # Enviar PKT_RECONNECT (sin credenciales)
                 self.enviar_reconnect(ip, port)
@@ -212,6 +211,9 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         addr = (ip, port)
         if addr in self.sessions:
             del self.sessions[addr]
+        # También limpiar de pendientes
+        if addr in self.reconnect_pending:
+            del self.reconnect_pending[addr]
 
     def tiene_sesion(self, ip, port):
         addr = (ip, port)
@@ -278,19 +280,23 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         """
         Recibe PKT_RECONNECT: restaura sesión desde BD y responde con PKT_RECONNECT.
         """
-        # Si recibimos respuesta a nuestro PKT_RECONNECT, quitar de pendientes
+        # CASO 1: Recibimos confirmación a nuestro PKT_RECONNECT
         if addr in self.reconnect_pending:
-            del self.reconnect_pending[addr]
-            # Notificar a GUI que se confirmó la reconexión
+            info = self.reconnect_pending.pop(addr)
+            cn = info['cn']
+            
+            # Ya tenemos sesión restaurada, ahora confirmada
             if addr in self.sessions:
                 session = self.sessions[addr]
                 contact_name = session.get('name', 'Unknown')
+                self.db.set_contact_connected(cn, True)
                 if self.callback:
-                    self.callback(addr, "PEER_RECONNECTED", contact_name, None)
+                    self.callback(addr, "SESSION_RESTORED", contact_name, None)
             return
         
+        # CASO 2: Recibimos PKT_RECONNECT de alguien (no es confirmación)
         if addr not in self.sessions:
-            # Buscar contacto en BD por IP/puerto
+            # No tenemos sesión: buscar en BD y restaurar
             all_contacts = self.db.get_all_contacts()
             for cn, info in all_contacts.items():
                 if info.get('ip') == addr[0] and info.get('port') == addr[1]:
@@ -306,7 +312,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                         }
                         self.db.set_contact_connected(cn, True)
                         
-                        # Responder con PKT_RECONNECT
+                        # Responder con PKT_RECONNECT (confirmación)
                         self.enviar_reconnect(addr[0], addr[1])
                         
                         if self.callback:
@@ -316,11 +322,20 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                         pass
             return
         
-        # Ya tenemos sesión: solo notificar
+        # CASO 3: Ya tenemos sesión y recibimos PKT_RECONNECT
+        # Esto puede pasar si ambos enviaron PKT_RECONNECT al mismo tiempo
+        # Solo notificar, ya está todo OK
         session = self.sessions[addr]
         contact_name = session.get('name', 'Unknown')
-        if self.callback:
-            self.callback(addr, "PEER_RECONNECTED", contact_name, None)
+        
+        # Buscar CN correcto
+        all_contacts = self.db.get_all_contacts()
+        for cn, info in all_contacts.items():
+            if info.get('ip') == addr[0] and info.get('port') == addr[1]:
+                self.db.set_contact_connected(cn, True)
+                if self.callback:
+                    self.callback(addr, "PEER_RECONNECTED", contact_name, None)
+                return
 
     def enviar_reconnect(self, ip, port):
         if not self.transport:
