@@ -14,7 +14,7 @@ class DiscoveryService:
         self.azc = None # AsyncZeroconf
         self.browser = None # AsyncServiceBrowser
         self.my_ip = self.get_lan_ip() # Ip que tenemos
-        
+         
         # ID único para evitar choques si reinicias rápido el programa
         self.unique_id = str(uuid.uuid4())[:8]
         self.my_name = f"dni-im-{self.unique_id}.{config.SERVICE_TYPE}" # Nombre del servicio(Casi nunca se utiliza)

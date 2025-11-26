@@ -499,6 +499,38 @@ class ChatGUI:
             
             self.refresh_ui()
 
+<<<<<<< HEAD
+=======
+    def force_disconnect(self):
+        if not self.current_cn:
+            return
+        info = self.db.get_contact_info(self.current_cn)
+        if info and info.get("ip"):
+            self.protocol.cerrar_sesion(info["ip"], info["port"])
+            self.db.set_contact_connected(self.current_cn, False)
+            ts = datetime.now().strftime("%H:%M")
+            self.db.add_message(self.current_cn, "Sys", "Desconectado manualmente", "system", ts)
+            self.refresh_ui()
+
+    async def auto_connect_and_send_all(self):
+        await asyncio.sleep(0.5)
+        all_contacts = self.db.get_all_contacts()
+        
+        # Enviar PKT_RECONNECT a todos los contactos para avisar que estamos disponibles
+        for cn, info in all_contacts.items():
+            ip = info.get("ip")
+            port = info.get("port")
+            
+            if not ip or not port:
+                continue
+            
+            # Intentar restaurar sesión desde BD y enviar PKT_RECONNECT
+            self.protocol.enviar_handshake(ip, port, cn=cn)
+            await asyncio.sleep(0.1)
+         
+        self.refresh_ui()
+
+>>>>>>> 0498593343e1ebab1672d6a1b0629a019cc25716
     async def check_ack_timeouts(self):
         """
         Controla que si un mensaje lleva >5s como 'sent' sin ACK, vuelva a 'pending' para reenvío.
