@@ -471,7 +471,15 @@ class ChatGUI:
         Solo el lado que INICIA la reconexión manda mensajes pendientes.
         El lado que responde a un reconnect solo restaura la sesión y espera recibir mensajes.
         """
+        if text == "SESSIONS_READY":
+            asyncio.create_task(self.auto_connect_and_send_all())
+            return
 
+        # 2. Si addr es None por cualquier motivo (NUNCA debería salvo SESSIONS_READY), salta el resto
+        if addr is None:
+            return
+
+    
         # Determinamos el contact_id
         contact_id = None
         for cn, info in self.db.get_all_contacts().items():
