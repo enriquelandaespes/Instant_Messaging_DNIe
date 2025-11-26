@@ -515,25 +515,10 @@ class ChatGUI:
                 self.db.add_message(contact_id, "Sys", "🔒 Conexión segura establecida", "system", ts)
             self.send_pending_messages(contact_id, addr[0], addr[1])
         
-        # SESSION_RESTORED: AMBOS envían pendientes tras 1 segundo
-        elif text == "SESSION_RESTORED":
+        # SESSION_RESTORED o PEER_RECONNECTED: enviar inmediatamente
+        elif text in ("SESSION_RESTORED", "PEER_RECONNECTED"):
             self.db.set_contact_connected(contact_id, True)
-            
-            async def delayed_send():
-                await asyncio.sleep(1.0)
-                self.send_pending_messages(contact_id, addr[0], addr[1])
-            
-            asyncio.create_task(delayed_send())
-        
-        # PEER_RECONNECTED: también enviar tras 1 segundo
-        elif text == "PEER_RECONNECTED":
-            self.db.set_contact_connected(contact_id, True)
-            
-            async def delayed_send():
-                await asyncio.sleep(1.0)
-                self.send_pending_messages(contact_id, addr[0], addr[1])
-            
-            asyncio.create_task(delayed_send())
+            self.send_pending_messages(contact_id, addr[0], addr[1])
         
         # RECONNECT_TIMEOUT
         elif text == "RECONNECT_TIMEOUT":
@@ -562,6 +547,7 @@ class ChatGUI:
                     self.scroll_offset = 0
         
         self.refresh_ui()
+
 
 
     def send_pending_messages(self, cn, ip, port):
