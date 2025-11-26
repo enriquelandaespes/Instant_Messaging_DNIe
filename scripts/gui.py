@@ -469,15 +469,20 @@ class ChatGUI:
             asyncio.create_task(self.auto_connect_and_send_all())
             return
         
+        # Cuando se restaura/establece sesión, enviar mensajes pendientes SOLO de este contacto
         if text in ["SESSION_RESTORED", "HANDSHAKE_OK", "PEER_RECONNECTED"]:
             for cn, info in self.db.get_all_contacts().items():
                 if info.get("ip") == addr[0] and info.get("port") == addr[1]:
                     self.db.set_contact_connected(cn, True)
                     if cn in self.pending_handshakes:
                         self.pending_handshakes.discard(cn)
+                    
+                    # Enviar mensajes pendientes SOLO para este contacto que se reconectó
+                    self.send_pending_messages(cn, addr[0], addr[1])
                     break
             self.refresh_ui()
             return
+
         
         matching_contacts = []
         all_contacts = self.db.get_all_contacts()
@@ -630,19 +635,24 @@ class ChatGUI:
 
     async def auto_connect_and_send_all(self):
         """
-        Al arrancar, envía PKT_RECONNECT a todos los contactos conocidos UNA SOLA VEZ.
+        Al arrancar, envía PKT_RECONNECT a TODOS los contactos conocidos.
+        Cuando cada uno responda, se enviarán sus mensajes pendientes.
         """
         await asyncio.sleep(0.5)
         all_contacts = list(self.db.get_all_contacts().items())
+        
         for cn, info in all_contacts:
             ip = info.get("ip")
             port = info.get("port")
             if not ip or not port:
                 continue
-            # Esto restaura sesión local y envía PKT_RECONNECT UNA VEZ
+            
+            # Restaura sesión local y envía PKT_RECONNECT
             self.protocol.enviar_handshake(ip, port, cn=cn)
             await asyncio.sleep(0.1)
+        
         self.refresh_ui()
+
 
     async def check_ack_timeouts(self):
         """
