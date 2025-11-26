@@ -2,7 +2,6 @@ import asyncio
 import struct
 import os
 import hashlib
-import time
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.asymmetric import x25519
 from cryptography import x509
@@ -47,7 +46,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         elif msg_type == PKT_ACK:
             self.handle_ack(payload, addr)
         elif msg_type == PKT_RECONNECT:
-            self.handle_reconnect(payload, addr)
+            asyncio.create_task(self.handle_reconnect(payload, addr))
 
     async def handle_handshake(self, payload, addr, is_response):
         if addr in self.sessions:
@@ -260,7 +259,10 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         except:
             pass
 
-    def handle_reconnect(self, payload, addr):
+    async def handle_reconnect(self, payload, addr):
+        """
+        Recibe PKT_RECONNECT: restaura sesión desde BD y responde con PKT_RECONNECT.
+        """
         # CASO 1: Confirmación a mi PKT_RECONNECT
         if addr in self.reconnect_pending:
             info = self.reconnect_pending.pop(addr)
@@ -294,8 +296,8 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                         # Responder con PKT_RECONNECT
                         self.enviar_reconnect(addr[0], addr[1])
                         
-                        # Sleep de 3 segundos para fijar sesión antes de notificar
-                        time.sleep(3)
+                        # Sleep de 3 segundos ASYNC para fijar sesión
+                        await asyncio.sleep(3)
                         
                         if self.callback:
                             self.callback(addr, "SESSION_RESTORED", info.get("name", cn), None)
@@ -330,6 +332,9 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             return False
 
     async def check_reconnect_timeouts(self):
+        """
+        Verifica si hay reconexiones pendientes que no respondieron en 5 segundos.
+        """
         while True:
             await asyncio.sleep(1)
             
