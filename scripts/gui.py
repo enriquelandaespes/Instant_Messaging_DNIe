@@ -428,8 +428,6 @@ class ChatGUI:
         else:
             self.w_suggestions.text = "  Sin coincidencias"
 
-
-
     def refresh_ui(self):
         lines = []
         
@@ -534,6 +532,12 @@ class ChatGUI:
                 self.contact_keys.sort()
             if not self.current_cn:
                 self.current_cn = contact_id
+        
+        # CAMBIO AQUÍ: INTENTO DE RECONEXIÓN AUTOMÁTICA
+        # Si tenemos claves guardadas, marcamos como conectado SIN hacer handshake
+        if self.protocol.restaurar_sesion_si_existe(ip, port):
+            self.db.set_contact_connected(contact_id, True)
+            # Opcional: Enviar paquete 'ping' cifrado para refrescar NAT
         
         self.refresh_ui()
 
@@ -650,7 +654,7 @@ class ChatGUI:
                 
                 # Intentar handshake/reconnect si no hay sesión
                 if not self.protocol.tiene_sesion(ip, port):
-                    self.protocol.enviar_handshake(ip, port, cn=cn)
+                    self.protocol.enviar_handshake(ip, port)
                     await asyncio.sleep(0.5)  # Esperar a que se restaure/establezca
                 
                 # Intentar enviar los pendientes si ahora hay sesión
@@ -669,7 +673,7 @@ class ChatGUI:
             return
         
         for msg in pending:
-            success = self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
+            success = self.protocol.enviar_mensaje(ip, port, msg['text'])
             if success:
                 self.db.mark_message_status(cn, msg['id'], "sent")
             else:
@@ -701,17 +705,17 @@ class ChatGUI:
                 ip, port = info.get("ip"), info.get("port")
                 ts = datetime.now().strftime("%H:%M")
                 
+                # LÓGICA DE ENVÍO CON CHEQUEO DE SESIÓN
                 if not ip or not self.protocol.tiene_sesion(ip, port):
                     self.db.add_message(self.current_cn, self.my_nick, ascii_text, "pending", ts)
                     self.refresh_ui()
                     return
                 
                 msg_id = self.db.add_message(self.current_cn, self.my_nick, ascii_text, "sent", ts)
-                if not self.protocol.enviar_mensaje(ip, port, ascii_text, msg_id):
+                if not self.protocol.enviar_mensaje(ip, port, ascii_text):
                     # Si falla el envío, marcar como pendiente y desconectar
                     self.db.mark_message_status(self.current_cn, msg_id, "pending")
                     self.db.set_contact_connected(self.current_cn, False)
-                    self.protocol.cerrar_sesion(ip, port)
                     # Agregar mensaje de sistema indicando el problema
                     self.db.add_message(self.current_cn, "Sys", "❌ Error al enviar ASCII - Usuario OFFLINE", "error", ts)
                 self.refresh_ui()
@@ -733,26 +737,29 @@ class ChatGUI:
             self.w_input.text = ""
             self.refresh_ui()
             return
-        if not self.protocol.tiene_sesion(ip, port):
+
+        # CAMBIO AQUÍ: Verificamos sesión antes de actuar
+        tiene_sesion = self.protocol.restaurar_sesion_si_existe(ip, port) or self.protocol.tiene_sesion(ip, port)
+
+        if not tiene_sesion:
             if text:
                 self.db.add_message(self.current_cn, self.my_nick, text, "pending", ts)
                 self.scroll_offset = 0  # Auto-scroll al final
                 self.w_input.text = ""
             if self.current_cn not in self.pending_handshakes:
-                # FIX: Pasar self.current_cn (ID) en lugar del nombre para que encuentre la session_key
-                self.protocol.enviar_handshake(ip, port, cn=self.current_cn)
+                self.protocol.enviar_handshake(ip, port)
                 self.pending_handshakes.add(self.current_cn)
                 self.refresh_ui()
             return
+            
         if text:
             msg_id = self.db.add_message(self.current_cn, self.my_nick, text, "sent", ts)
             self.scroll_offset = 0  # Auto-scroll al final
             self.w_input.text = ""
-            if not self.protocol.enviar_mensaje(ip, port, text, msg_id):
+            if not self.protocol.enviar_mensaje(ip, port, text):
                 # Si falla el envío, marcar como pendiente y desconectar
                 self.db.mark_message_status(self.current_cn, msg_id, "pending")
                 self.db.set_contact_connected(self.current_cn, False)
-                self.protocol.cerrar_sesion(ip, port)
                 # Agregar mensaje de sistema indicando el problema
                 self.db.add_message(self.current_cn, "Sys", "❌ Error al enviar - Usuario OFFLINE", "error", ts)
             self.refresh_ui()
@@ -762,7 +769,7 @@ class ChatGUI:
             return
         info = self.db.get_contact_info(self.current_cn)
         if info and info.get("ip"):
-            self.protocol.cerrar_sesion(info["ip"], info["port"])
+            # Aquí podrías añadir un protocolo.cerrar_sesion(ip, port)
             self.db.set_contact_connected(self.current_cn, False)
             ts = datetime.now().strftime("%H:%M")
             self.db.add_message(self.current_cn, "Sys", "Desconectado manualmente", "system", ts)
@@ -781,7 +788,8 @@ class ChatGUI:
                 continue
             
             # Intentar restaurar sesión desde BD y enviar PKT_RECONNECT
-            self.protocol.enviar_handshake(ip, port, cn=cn)
+            if not self.protocol.tiene_sesion(ip, port):
+                self.protocol.enviar_handshake(ip, port)
             await asyncio.sleep(0.1)
         
         self.refresh_ui()
@@ -810,7 +818,7 @@ class ChatGUI:
                 if self.protocol.tiene_sesion(ip, port):
                     enviados = 0
                     for msg in pending:
-                        if self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id']):
+                        if self.protocol.enviar_mensaje(ip, port, msg['text']):
                             self.db.mark_message_status(cn, msg['id'], "sent")
                             enviados += 1
                     
@@ -830,8 +838,6 @@ class ChatGUI:
                         self.db.set_contact_connected(cn, False)
                         ip = info.get("ip")
                         port = info.get("port")
-                        if ip and port:
-                            self.protocol.cerrar_sesion(ip, port)
                         
                         # Marcar todos los mensajes "sent" como "pending"
                         msgs = self.db.get_history(cn)
@@ -839,8 +845,6 @@ class ChatGUI:
                             if msg.get("status") == "sent":
                                 self.db.mark_message_status(cn, msg["id"], "pending")
                         
-                        # Agregar mensaje de sistema
-                        ts = datetime.now().strftime("%H:%M")
                         self.refresh_ui()
 
     async def run(self):

@@ -45,6 +45,7 @@ async def main():
     def protocol_callback(addr, text, nombre, msg_id=None):
         gui.on_protocol_msg(addr, text, nombre, msg_id)
 
+    # AQUÍ PASAMOS LA DB AL PROTOCOLO
     protocol = SecureIMProtocol(dnie, db, protocol_callback)
     
     # Obtener IP local antes de crear la GUI
