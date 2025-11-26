@@ -506,13 +506,19 @@ class ChatGUI:
     def add_peer(self, name, ip, port):
         existing_cn = None
         all_contacts = self.db.get_all_contacts()
+        
+        # 1. Buscar por IP/Port exacto
         for cn, info in all_contacts.items():
             if info.get("ip") == ip and info.get("port") == port:
                 existing_cn = cn
                 break
+        
+        # 2. Buscar por Nombre (Case Insensitive) si no se encontró por IP
         if not existing_cn:
+            target_name = name.strip().lower()
             for cn, info in all_contacts.items():
-                if info.get("name") == name:
+                db_name = info.get("name", "").strip().lower()
+                if db_name == target_name:
                     existing_cn = cn
                     break
         
@@ -546,6 +552,11 @@ class ChatGUI:
     def on_protocol_msg(self, addr, text, real_cn, msg_id=None):
         if text == "SESSIONS_READY":
             asyncio.create_task(self.auto_connect_and_send_all())
+            return
+        
+        # Ignorar mensajes de sistema del protocolo para que no salgan en el chat
+        if text in ["SESSION_RESTORED", "HANDSHAKE_OK"]:
+            self.refresh_ui()
             return
         
         matching_contacts = []
