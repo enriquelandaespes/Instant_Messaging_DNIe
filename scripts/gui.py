@@ -117,8 +117,8 @@ class ChatGUI:
             else:
                 e.app.layout.focus(self.w_input)
         
-        # Ctrl+Up/Down para scroll manual del chat
-        @kb.add("c-up")
+        # Shift+Up/Down para scroll manual del chat
+        @kb.add("s-up")
         def _(e):
             # Subir en el historial
             self.scroll_offset += 5
@@ -126,7 +126,7 @@ class ChatGUI:
                 self.scroll_offset = max(0, self._last_line_count - 1)
             e.app.invalidate()
         
-        @kb.add("c-down")
+        @kb.add("s-down")
         def _(e):
             # Bajar hacia el final
             self.scroll_offset -= 5
@@ -347,9 +347,9 @@ class ChatGUI:
         
         # Scroll
         formatted_lines.append(("class:msg-recv", "📜 SCROLL DEL CHAT:\n"))
-        formatted_lines.append(("class:msg-sent", "   Ctrl + ↑      Subir en el historial (5 líneas)\n"))
-        formatted_lines.append(("class:msg-sent", "   Ctrl + ↓      Bajar en el historial (5 líneas)\n"))
-        formatted_lines.append(("class:msg-sys", "   * El scroll se resetea automáticamente al enviar/recibir mensajes\n"))
+        formatted_lines.append(("class:msg-sent", "   Shift + ↑     Subir en el historial (5 líneas)\n"))
+        formatted_lines.append(("class:msg-sent", "   Shift + ↓     Bajar en el historial (5 líneas)\n"))
+        formatted_lines.append(("class:msg-sys", "   * El scroll se mantiene hasta que envíes un mensaje\n"))
         formatted_lines.append(("", "\n"))
         
         # Mensajes
@@ -593,7 +593,9 @@ class ChatGUI:
             received_msg_id = self.db.add_message(contact_id, real_cn, text, "received", ts, msg_id=msg_id)
             if self.current_cn == contact_id:
                 self.db.mark_message_as_read_by_id(contact_id, received_msg_id)
-                self.scroll_offset = 0  # Auto-scroll al final
+                # Solo auto-scroll si el usuario está ya al final
+                if self.scroll_offset == 0:
+                    self.scroll_offset = 0
         
         self.refresh_ui()
 
