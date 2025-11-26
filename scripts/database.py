@@ -148,7 +148,7 @@ class JsonDatabase:
         return self.data.get("contacts", {})
 
     def get_contact_info(self, cn):
-        return self.data["contacts"].get(cn)
+        return self.data["contacts"].get(cn,{})
 
     def add_or_update_contact(self, cn, **kwargs):
         if cn not in self.data["contacts"]:
@@ -266,12 +266,16 @@ class JsonDatabase:
         return has_timeout
 
     def get_session_key(self, cn):
-        if cn not in self.data["contacts"]:
-            return None
-        key_hex = self.data["contacts"][cn].get("session_key")
-        if key_hex:
-            return bytes.fromhex(key_hex)
+        """Obtiene la session_key guardada para un contacto"""
+        contact = self.data["contacts"].get(cn, {})
+        session_key_hex = contact.get("session_key")
+        if session_key_hex:
+            return session_key_hex  # Devuelve como string hex, protocol.py lo convierte
         return None
+
+    def get_contact_info(self, cn):
+        """Obtiene toda la info de un contacto"""
+        return self.data["contacts"].get(cn,{})
 
     def get_peer_cert(self, cn):
         if cn not in self.data["contacts"]:
