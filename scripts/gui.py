@@ -587,7 +587,7 @@ class ChatGUI:
         if contact_id not in self.contact_keys:
             self.contact_keys.append(contact_id)
             self.contact_keys.sort()
-
+ 
         ts = datetime.now().strftime("%H:%M")
         
         if text == "HANDSHAKE_OK":
