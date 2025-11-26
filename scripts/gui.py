@@ -23,6 +23,7 @@ class ChatGUI:
         self.current_cn = None
         self.pending_handshakes = set()
         self._timeout_check_task = None
+        self._reconnect_timeout_task = None
         
         self._last_line_count = 0
         self.scroll_offset = 0
@@ -483,6 +484,15 @@ class ChatGUI:
             self.refresh_ui()
             return
         
+        # Timeout de reconexión: marcar como desconectado
+        if text == "RECONNECT_TIMEOUT":
+            # real_cn contiene el nombre del contacto que no respondió
+            self.db.set_contact_connected(real_cn, False)
+            if real_cn in self.pending_handshakes:
+                self.pending_handshakes.discard(real_cn)
+            self.refresh_ui()
+            return
+        
         matching_contacts = []
         all_contacts = self.db.get_all_contacts()
         
@@ -688,6 +698,8 @@ class ChatGUI:
 
     async def run(self):
         self._timeout_check_task = asyncio.create_task(self.check_ack_timeouts())
+        self._reconnect_timeout_task = asyncio.create_task(self.protocol.check_reconnect_timeouts())
+        
         try:
             await self.app.run_async()
         finally:
@@ -697,3 +709,10 @@ class ChatGUI:
                     await self._timeout_check_task
                 except asyncio.CancelledError:
                     pass
+            if self._reconnect_timeout_task:
+                self._reconnect_timeout_task.cancel()
+                try:
+                    await self._reconnect_timeout_task
+                except asyncio.CancelledError:
+                    pass
+

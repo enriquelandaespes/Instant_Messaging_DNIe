@@ -24,6 +24,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         self.sessions = {}
         self.my_cid = os.urandom(4)
         self.handshake_in_progress = {}
+        self.reconnect_pending = {}  # Tracking de reconexiones pendientes
 
     def connection_made(self, transport):
         self.transport = transport
@@ -48,7 +49,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             self.handle_reconnect(payload, addr)
 
     async def handle_handshake(self, payload, addr, is_response):
-        # Si ya tenemos sesión, ignorar
         if addr in self.sessions:
             return
         
@@ -188,7 +188,12 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 }
                 
                 final_cn = cn if cn else contact_name
-                self.db.set_contact_connected(final_cn, True)
+                
+                # Marcar como pendiente de confirmación (5 segundos)
+                self.reconnect_pending[addr] = {
+                    'cn': final_cn,
+                    'timestamp': asyncio.get_event_loop().time()
+                }
                 
                 if self.callback:
                     self.callback(addr, "SESSION_RESTORED", contact_name, None)
@@ -273,6 +278,17 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         """
         Recibe PKT_RECONNECT: restaura sesión desde BD y responde con PKT_RECONNECT.
         """
+        # Si recibimos respuesta a nuestro PKT_RECONNECT, quitar de pendientes
+        if addr in self.reconnect_pending:
+            del self.reconnect_pending[addr]
+            # Notificar a GUI que se confirmó la reconexión
+            if addr in self.sessions:
+                session = self.sessions[addr]
+                contact_name = session.get('name', 'Unknown')
+                if self.callback:
+                    self.callback(addr, "PEER_RECONNECTED", contact_name, None)
+            return
+        
         if addr not in self.sessions:
             # Buscar contacto en BD por IP/puerto
             all_contacts = self.db.get_all_contacts()
@@ -318,3 +334,29 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             return True
         except Exception:
             return False
+
+    async def check_reconnect_timeouts(self):
+        """
+        Verifica si hay reconexiones pendientes que no respondieron en 5 segundos.
+        """
+        while True:
+            await asyncio.sleep(1)
+            
+            current_time = asyncio.get_event_loop().time()
+            timeout_addrs = []
+            
+            for addr, info in list(self.reconnect_pending.items()):
+                if current_time - info['timestamp'] > 5:
+                    timeout_addrs.append(addr)
+            
+            for addr in timeout_addrs:
+                info = self.reconnect_pending.pop(addr)
+                cn = info['cn']
+                
+                # Cerrar sesión local
+                if addr in self.sessions:
+                    del self.sessions[addr]
+                
+                # Notificar a GUI que el contacto está offline
+                if self.callback:
+                    self.callback(addr, "RECONNECT_TIMEOUT", cn, None)
