@@ -27,7 +27,8 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
 
     def connection_made(self, transport):
         self.transport = transport
-        self.restaurar_sesiones_guardadas()
+        # NO restaurar sesiones automáticamente - se restaurarán bajo demanda con PKT_RECONNECT
+        # self.restaurar_sesiones_guardadas()
         if self.callback:
             self.callback(None, "SESSIONS_READY", "System", None)
 
