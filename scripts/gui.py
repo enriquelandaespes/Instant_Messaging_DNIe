@@ -739,21 +739,23 @@ class ChatGUI:
 
     async def auto_connect_and_send_all(self):
         await asyncio.sleep(0.5)
-        all_contacts = self.db.get_all_contacts()
+        # FIX: Convertir a lista para evitar RuntimeError
+        all_contacts = list(self.db.get_all_contacts().items())
         
         # Enviar PKT_RECONNECT a todos los contactos para avisar que estamos disponibles
-        for cn, info in all_contacts.items():
+        for cn, info in all_contacts:
             ip = info.get("ip")
             port = info.get("port")
             
             if not ip or not port:
                 continue
             
-            # Intentar restaurar sesión desde BD y enviar PKT_RECONNECT
+            # Pasar cn a enviar_handshake
             self.protocol.enviar_handshake(ip, port, cn=cn)
             await asyncio.sleep(0.1)
         
         self.refresh_ui()
+
 
     async def check_ack_timeouts(self):
         while True:
