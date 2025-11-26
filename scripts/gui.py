@@ -402,7 +402,7 @@ class ChatGUI:
             if not info:
                 continue
             
-            # LÓGICA DE ESTADO PERFECTA
+            # LÓGICA PERFECTA
             if info.get("is_connected"):
                 icon = "🟢"
             elif info.get("session_key"):
@@ -517,7 +517,6 @@ class ChatGUI:
         
         ts = datetime.now().strftime("%H:%M")
         
-        # HANDSHAKE inicial
         if text == "HANDSHAKE_OK":
             self.db.set_contact_connected(contact_id, True)
             msgs = self.db.get_history(contact_id)
@@ -526,33 +525,19 @@ class ChatGUI:
                 self.db.add_message(contact_id, "Sys", "🔒 Conexión segura establecida", "system", ts)
             self.send_pending_messages(contact_id, addr[0], addr[1])
         
-        # Soy el INICIADOR: envío pendientes AHORA
         elif text == "SESSION_RESTORED_INIT":
             self.db.set_contact_connected(contact_id, True)
             self.send_pending_messages(contact_id, addr[0], addr[1])
         
-        # Soy el RESPONDEDOR: espero a que el otro termine antes de enviar
         elif text == "SESSION_RESTORED_RESP":
             self.db.set_contact_connected(contact_id, True)
-            # El peer (iniciador) va a enviar sus pendientes primero
-            # Nosotros esperamos a SEND_MY_PENDING
+            # El respondedor ESPERA a recibir mensajes del iniciador
+            # Cuando llegue el primer mensaje, automáticamente enviará los suyos
         
-        # El iniciador va a enviar pendientes
-        elif text == "PEER_SENDING_PENDING":
-            pass
-        
-        # Ahora puedo enviar los míos
-        elif text == "SEND_MY_PENDING":
-            self.send_pending_messages(contact_id, addr[0], addr[1])
-        
-        # RECONNECT_TIMEOUT
         elif text == "RECONNECT_TIMEOUT":
             self.db.set_contact_connected(contact_id, False)
             self.refresh_ui()
             return
-        
-        elif text == "RECONNECT_FAILED":
-            pass
         
         elif text.startswith("HANDSHAKE_ERROR"):
             self.db.set_contact_connected(contact_id, False)
@@ -560,27 +545,30 @@ class ChatGUI:
         elif text == "ERROR_DESCIFRADO":
             pass
         
-        # ACK recibido
         elif text.startswith("ACK|"):
             ack_msg_id = text.split('|', 1)[1]
             self.db.mark_message_status(contact_id, ack_msg_id, "delivered")
         
-        # Mensaje normal recibido
         else:
+            # MENSAJE NORMAL RECIBIDO
             self.db.set_contact_connected(contact_id, True)
             received_msg_id = self.db.add_message(contact_id, real_cn, text, "received", ts, msg_id=msg_id)
+            
+            # SI SOY EL RESPONDEDOR Y NO HE ENVIADO PENDIENTES AÚN
+            if contact_id in self.protocol.role and self.protocol.role.get((addr[0], addr[1])) == "responder":
+                if contact_id not in self.sending_pending:
+                    # Envía los tuyos ahora que recibiste del iniciador
+                    self.send_pending_messages(contact_id, addr[0], addr[1])
+            
             if self.current_cn == contact_id:
                 self.db.mark_message_as_read_by_id(contact_id, received_msg_id)
-                if self.scroll_offset == 0:
-                    self.scroll_offset = 0
         
         self.refresh_ui()
 
     def send_pending_messages(self, cn, ip, port):
-        """Envía todos los mensajes pendientes de un contacto."""
+        """Envía todos los mensajes pendientes de un contacto (UNA SOLA VEZ)."""
         pending = self.db.get_pending_messages(cn)
-        if not pending:
-            self.protocol.enviar_pending_done(ip, port)
+        if not pending or cn in self.sending_pending:
             return
         
         if not self.protocol.tiene_sesion(ip, port):
@@ -603,7 +591,6 @@ class ChatGUI:
                         break
             
             self.sending_pending.discard(cn)
-            self.protocol.enviar_pending_done(ip, port)
             self.refresh_ui()
         
         asyncio.create_task(send_all_async())
