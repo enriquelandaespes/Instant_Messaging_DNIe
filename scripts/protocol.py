@@ -294,7 +294,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                         # Responder con PKT_RECONNECT
                         self.enviar_reconnect(addr[0], addr[1])
                         
-                        # Sleep de 3 segundos para fijar sesión antes de enviar pendientes
+                        # Sleep de 3 segundos para fijar sesión antes de notificar
                         time.sleep(3)
                         
                         if self.callback:
