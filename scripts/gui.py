@@ -23,6 +23,7 @@ class ChatGUI:
         self.current_cn = None
         self.pending_handshakes = set()
         self._timeout_check_task = None
+        self._retry_pending_task = None
         
         # Variable para controlar el scroll seguro
         self._last_line_count = 0
@@ -528,10 +529,14 @@ class ChatGUI:
             if not self.current_cn:
                 self.current_cn = contact_id
         
-        # Si hay mensajes pendientes, intentar conectar y enviar
+        # Si hay mensajes pendientes, iniciar reintento automático
         pending = self.db.get_pending_messages(contact_id)
         if pending:
-            # Intentar handshake si no hay sesión
+            # Iniciar tarea de reintento si no está ya corriendo
+            if self._retry_pending_task is None or self._retry_pending_task.done():
+                self._retry_pending_task = asyncio.create_task(self._auto_retry_pending())
+            
+            # Intentar handshake inmediatamente si no hay sesión
             if not self.protocol.tiene_sesion(ip, port):
                 self.protocol.enviar_handshake(ip, port, cn=contact_id)
                 self.pending_handshakes.add(contact_id)
@@ -618,6 +623,37 @@ class ChatGUI:
         
         self.refresh_ui()
 
+    async def _auto_retry_pending(self):
+        """Reintenta enviar mensajes pendientes cada 3 segundos"""
+        while True:
+            await asyncio.sleep(3)
+            
+            # Revisar todos los contactos con mensajes pendientes
+            for cn in list(self.contact_keys):
+                pending = self.db.get_pending_messages(cn)
+                if not pending:
+                    continue
+                
+                info = self.db.get_contact_info(cn)
+                if not info:
+                    continue
+                
+                ip = info.get("ip")
+                port = info.get("port")
+                if not ip or not port:
+                    continue
+                
+                # Intentar handshake si no hay sesión
+                if not self.protocol.tiene_sesion(ip, port):
+                    self.protocol.enviar_handshake(ip, port, cn=cn)
+                    await asyncio.sleep(0.5)  # Esperar un poco para que se establezca
+                    continue
+                
+                # Intentar enviar los pendientes
+                self.check_pending_messages(cn, ip, port)
+            
+            self.refresh_ui()
+    
     def check_pending_messages(self, cn, ip, port):
         pending = self.db.get_pending_messages(cn)
         if not pending:
@@ -813,7 +849,7 @@ class ChatGUI:
 
     async def run(self):
         self._timeout_check_task = asyncio.create_task(self.check_ack_timeouts())
-        self._retry_task = asyncio.create_task(self.retry_pending_messages())
+        self._retry_task = asyncio.create_task(self._auto_retry_pending())
         
         try:
             await self.app.run_async()
