@@ -24,6 +24,7 @@ class ChatGUI:
         self.pending_handshakes = set()
         self._timeout_check_task = None
         self._reconnect_timeout_task = None
+        self.sending_pending = set()
         
         self._last_line_count = 0
         self.scroll_offset = 0
@@ -473,7 +474,6 @@ class ChatGUI:
         if addr is None:
             return
         
-        # Buscar contact_id por IP/puerto PRIMERO
         contact_id = None
         all_contacts = self.db.get_all_contacts()
         
@@ -482,22 +482,18 @@ class ChatGUI:
                 contact_id = cn
                 break
         
-        # Si no existe, buscar por nombre
         if not contact_id:
             for cn, info in all_contacts.items():
                 if info.get("name") == real_cn:
                     contact_id = cn
                     break
         
-        # Si aún no existe, crear nuevo con el nombre (NO con IP:puerto)
         if not contact_id:
             contact_id = real_cn
         
-        # Limpiar pending
         if contact_id in self.pending_handshakes:
             self.pending_handshakes.discard(contact_id)
         
-        # Actualizar SOLO la IP/puerto, NO el nombre si ya existe
         if contact_id in all_contacts:
             self.db.add_or_update_contact(contact_id, ip=addr[0], port=addr[1])
         else:
@@ -561,29 +557,26 @@ class ChatGUI:
         if not self.protocol.tiene_sesion(ip, port):
             return
         
+        self.sending_pending.add(cn)
+        
         async def send_all_async():
             for msg in pending:
                 success = self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
                 if success:
                     self.db.mark_message_status(cn, msg['id'], "sent")
-                    # Pequeño delay entre mensajes para no saturar
                     await asyncio.sleep(0.1)
                 else:
-                    # Si falla, esperar un poco y reintentar UNA vez
                     await asyncio.sleep(0.2)
                     success = self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
                     if success:
                         self.db.mark_message_status(cn, msg['id'], "sent")
                     else:
-                        # Si falla de nuevo, dejar como pending y parar
                         break
             
+            self.sending_pending.discard(cn)
             self.refresh_ui()
         
-        # Crear tarea para ejecutar el envío asíncrono
         asyncio.create_task(send_all_async())
-
-
 
     async def handle_enter(self):
         if self.current_cn in ["__MI_CUENTA__", "__AYUDA__"]:
@@ -685,6 +678,9 @@ class ChatGUI:
         while True:
             await asyncio.sleep(2)
             for cn in list(self.contact_keys):
+                if cn in self.sending_pending:
+                    continue
+                
                 info = self.db.get_contact_info(cn)
                 if info and info.get("is_connected"):
                     has_timeout = self.db.check_message_timeouts(cn, timeout_seconds=5)
