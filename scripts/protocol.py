@@ -305,7 +305,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                     pass
 
     async def handle_reconnect_resp(self, payload, addr):
-        """Recibe RESP a mi REQ: confirmo que soy iniciador"""
+        """Recibe RESP a mi REQ: confirmo que soy initiator"""
         if addr in self.reconnect_pending:
             info = self.reconnect_pending.pop(addr)
             cn = info['cn']
