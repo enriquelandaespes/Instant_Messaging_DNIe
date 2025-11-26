@@ -676,14 +676,14 @@ class ChatGUI:
 
     async def check_ack_timeouts(self):
         while True:
-            await asyncio.sleep(2)
+            await asyncio.sleep(0.5)
             for cn in list(self.contact_keys):
                 if cn in self.sending_pending:
                     continue
                 
                 info = self.db.get_contact_info(cn)
                 if info and info.get("is_connected"):
-                    has_timeout = self.db.check_message_timeouts(cn, timeout_seconds=5)
+                    has_timeout = self.db.check_message_timeouts(cn, timeout_seconds=0.5)
                     if has_timeout:
                         self.db.set_contact_connected(cn, False)
                         ip = info.get("ip")

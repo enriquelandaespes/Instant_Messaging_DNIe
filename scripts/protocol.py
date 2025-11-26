@@ -340,7 +340,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         Verifica si hay reconexiones pendientes que no respondieron en 5 segundos.
         """
         while True:
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.5)
             
             current_time = asyncio.get_event_loop().time()
             timeout_addrs = []
