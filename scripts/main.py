@@ -47,7 +47,11 @@ async def main():
 
     protocol = SecureIMProtocol(dnie, db, protocol_callback)
     
-    gui = ChatGUI(protocol, my_nick, db)
+    # Obtener IP local antes de crear la GUI
+    mdns_temp = DiscoveryService(port, my_nick, lambda n, i, p: None)
+    my_ip = mdns_temp.get_lan_ip()
+    
+    gui = ChatGUI(protocol, my_nick, db, my_ip, port)
     
     transport, _ = await loop.create_datagram_endpoint(
         lambda: protocol, local_addr=('0.0.0.0', port)
