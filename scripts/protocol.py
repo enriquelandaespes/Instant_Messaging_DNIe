@@ -127,32 +127,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         except:
             pass
 
-    def handle_reconnect(self, payload, addr):
-        if addr not in self.sessions:
-            return
-        
-        session = self.sessions[addr]
-        contact_name = session.get('name', 'Unknown')
-        
-        # Evitar bucle infinito: No responder automáticamente con otro reconnect
-        # self.enviar_reconnect(addr[0], addr[1])
-        
-        if self.callback:
-            self.callback(addr, "PEER_RECONNECTED", contact_name, None)
-
-    def enviar_reconnect(self, ip, port):
-        if not self.transport:
-            return False
-        addr = (ip, port)
-        if addr not in self.sessions:
-            return False
-        try:
-            packet = struct.pack("B", PKT_RECONNECT) + self.my_cid
-            self.transport.sendto(packet, addr)
-            return True
-        except Exception as e:
-            return False
-
     def enviar_handshake(self, ip, port, cn=None):
         addr = (ip, port)
         if addr in self.sessions:
@@ -170,13 +144,11 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                     self.db.set_contact_connected(cn, True)
                     if self.callback:
                         self.callback(addr, "SESSION_RESTORED", cn, None)
-                    
-                    # Si restauramos sesión, enviamos RECONNECT para avisar al peer
-                    # en lugar de hacer handshake completo de nuevo
+                    # Enviar PKT_RECONNECT para avisar que tenemos sesión
                     self.enviar_reconnect(ip, port)
                     return True
                 except Exception as e:
-                    pass
+                    return False
         
         self.enviar_paquete_credenciales(ip, port, tipo=PKT_HANDSHAKE_INIT)
         return False
@@ -246,6 +218,54 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 self.callback(addr, f"ACK|{msg_id}", nombre, None)
         except:
             pass
+
+    def handle_reconnect(self, payload, addr):
+        # Si no tenemos sesión, intentar restaurar desde BD
+        if addr not in self.sessions:
+            # Buscar contacto por IP/port
+            contacts = self.db.get_all_contacts()
+            for cn, info in contacts.items():
+                if info.get('ip') == addr[0] and info.get('port') == addr[1]:
+                    saved_key = self.db.get_session_key(cn)
+                    if saved_key:
+                        try:
+                            self.sessions[addr] = {
+                                'cipher': ChaCha20Poly1305(saved_key),
+                                'name': cn,
+                                'state': 'ESTABLISHED'
+                            }
+                            self.db.set_contact_connected(cn, True)
+                            if self.callback:
+                                self.callback(addr, "SESSION_RESTORED", cn, None)
+                            # Responder con PKT_RECONNECT
+                            self.enviar_reconnect(addr[0], addr[1])
+                            return
+                        except:
+                            pass
+            return
+        
+        session = self.sessions[addr]
+        contact_name = session.get('name', 'Unknown')
+        
+        self.enviar_reconnect(addr[0], addr[1])
+        
+        if self.callback:
+            self.callback(addr, "PEER_RECONNECTED", contact_name, None)
+
+
+
+    def enviar_reconnect(self, ip, port):
+        if not self.transport:
+            return False
+        addr = (ip, port)
+        if addr not in self.sessions:
+            return False
+        try:
+            packet = struct.pack("B", PKT_RECONNECT) + self.my_cid
+            self.transport.sendto(packet, addr)
+            return True
+        except Exception as e:
+            return False
 
     def restaurar_sesiones_guardadas(self):
         try:

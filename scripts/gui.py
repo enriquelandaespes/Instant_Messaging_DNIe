@@ -654,14 +654,14 @@ class ChatGUI:
                 if not ip or not port:
                     continue
                 
-                # Intentar handshake si no hay sesión
+                # Intentar handshake/reconnect si no hay sesión
                 if not self.protocol.tiene_sesion(ip, port):
                     self.protocol.enviar_handshake(ip, port, cn=cn)
-                    await asyncio.sleep(0.5)  # Esperar un poco para que se establezca
-                    continue
+                    await asyncio.sleep(0.5)  # Esperar a que se restaure/establezca
                 
-                # Intentar enviar los pendientes
-                self.check_pending_messages(cn, ip, port)
+                # Intentar enviar los pendientes si ahora hay sesión
+                if self.protocol.tiene_sesion(ip, port):
+                    self.check_pending_messages(cn, ip, port)
             
             self.refresh_ui()
     
