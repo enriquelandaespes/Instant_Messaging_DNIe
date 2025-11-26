@@ -557,11 +557,11 @@ class ChatGUI:
         pending = self.db.get_pending_messages(cn)
         if not pending:
             return
-    
+        
         if not self.protocol.tiene_sesion(ip, port):
             return
-    
-        async def send_all():
+        
+        async def send_all_async():
             for msg in pending:
                 success = self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
                 if success:
@@ -577,10 +577,12 @@ class ChatGUI:
                     else:
                         # Si falla de nuevo, dejar como pending y parar
                         break
+            
+            self.refresh_ui()
         
-        self.refresh_ui()
-    
-    asyncio.create_task(send_all())
+        # Crear tarea para ejecutar el envío asíncrono
+        asyncio.create_task(send_all_async())
+
 
 
     async def handle_enter(self):
