@@ -25,6 +25,7 @@ class ChatGUI:
         self._timeout_check_task = None
         self._reconnect_timeout_task = None
         self.sending_pending = set()
+        self.waiting_for_peer_pending = set()
         
         self._last_line_count = 0
         self.scroll_offset = 0
@@ -153,7 +154,7 @@ class ChatGUI:
             return "❓ Ayuda - Atajos de Teclado"
         
         info = self.db.get_contact_info(self.current_cn)
-        status = "🔴 OFFLINE"
+        status = "🔴 DESCONECTADO"
         if info and info.get("is_connected"): 
             status = "🟢 CONECTADO"
         elif info and info.get("ip"): 
@@ -397,7 +398,15 @@ class ChatGUI:
             info = self.db.get_contact_info(k)
             if not info:
                 continue
-            icon = "🟢" if info.get("is_connected") else ("🟡" if info.get("ip") else "🔴")
+            
+            # LÓGICA DE ESTADO CORRECTA
+            if info.get("is_connected"):
+                icon = "🟢"
+            elif info.get("ip"):
+                icon = "🟡"
+            else:
+                icon = "🔴"
+            
             prefix = "➞ " if k == self.current_cn else "  "
             full_name = info.get("name", k)
             name_parts = full_name.split()
@@ -512,26 +521,21 @@ class ChatGUI:
             user_msgs = [m for m in msgs if m.get('sender') != "Sys"]
             if len(user_msgs) == 0:
                 self.db.add_message(contact_id, "Sys", "🔒 Conexión segura establecida", "system", ts)
-            self.send_pending_messages(contact_id, addr[0], addr[1])
+            asyncio.create_task(self.handle_pending_exchange(contact_id, addr[0], addr[1]))
         
-        # SESSION_RESTORED: soy el INICIADOR, envío inmediatamente
+        # SESSION_RESTORED: sesión restaurada
         elif text == "SESSION_RESTORED":
             self.db.set_contact_connected(contact_id, True)
+            asyncio.create_task(self.handle_pending_exchange(contact_id, addr[0], addr[1]))
+        
+        # PEER_SENDING_PENDING: el peer va a enviar sus pendientes, espero
+        elif text == "PEER_SENDING_PENDING":
+            self.waiting_for_peer_pending.add(contact_id)
+        
+        # SEND_MY_PENDING: el peer terminó, ahora envío los míos
+        elif text == "SEND_MY_PENDING":
+            self.waiting_for_peer_pending.discard(contact_id)
             self.send_pending_messages(contact_id, addr[0], addr[1])
-        
-        # SESSION_RESTORED_WAIT: soy el RESPONDEDOR, espero 1.5s antes de enviar
-        elif text == "SESSION_RESTORED_WAIT":
-            self.db.set_contact_connected(contact_id, True)
-            
-            async def delayed_send():
-                await asyncio.sleep(1.5)
-                self.send_pending_messages(contact_id, addr[0], addr[1])
-            
-            asyncio.create_task(delayed_send())
-        
-        # PEER_RECONNECTED
-        elif text == "PEER_RECONNECTED":
-            self.db.set_contact_connected(contact_id, True)
         
         # RECONNECT_TIMEOUT
         elif text == "RECONNECT_TIMEOUT":
@@ -561,6 +565,33 @@ class ChatGUI:
         
         self.refresh_ui()
 
+    async def handle_pending_exchange(self, cn, ip, port):
+        """
+        Coordina el intercambio de mensajes pendientes.
+        1. Envía PKT_PENDING_SEND al peer
+        2. Espera su respuesta (PKT_PENDING_DONE)
+        3. Envía sus propios pendientes
+        4. Envía PKT_PENDING_DONE
+        """
+        await asyncio.sleep(0.5)
+        
+        pending_count = len(self.db.get_pending_messages(cn))
+        if pending_count == 0:
+            self.protocol.enviar_pending_send(ip, port)
+            await asyncio.sleep(0.3)
+            self.protocol.enviar_pending_done(ip, port)
+            return
+        
+        # Envío mis pendientes
+        self.send_pending_messages(cn, ip, port)
+        
+        # Espero a que termine
+        while cn in self.sending_pending:
+            await asyncio.sleep(0.1)
+        
+        # Aviso al peer que terminé
+        self.protocol.enviar_pending_done(ip, port)
+
     def send_pending_messages(self, cn, ip, port):
         """
         Envía todos los mensajes pendientes de un contacto específico.
@@ -580,7 +611,7 @@ class ChatGUI:
                 success = self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
                 if success:
                     self.db.mark_message_status(cn, msg['id'], "sent")
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(0.15)
                 else:
                     await asyncio.sleep(0.2)
                     success = self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
