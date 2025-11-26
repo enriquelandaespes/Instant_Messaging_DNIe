@@ -525,14 +525,18 @@ class ChatGUI:
                 self.db.add_message(contact_id, "Sys", "🔒 Conexión segura establecida", "system", ts)
             self.send_pending_messages(contact_id, addr[0], addr[1])
         
+        # INICIADOR: se conectó y ya tiene sesión, envía pendientes YA
         elif text == "SESSION_RESTORED_INIT":
             self.db.set_contact_connected(contact_id, True)
             self.send_pending_messages(contact_id, addr[0], addr[1])
         
+        # RESPONDEDOR: se conectó, espera a recibir mensajes del iniciador
         elif text == "SESSION_RESTORED_RESP":
             self.db.set_contact_connected(contact_id, True)
-            # El respondedor ESPERA a recibir mensajes del iniciador
-            # Cuando llegue el primer mensaje, automáticamente enviará los suyos
+            # Marca que este contact es respondedor para luego saber cuándo enviar
+            if not hasattr(self, '_respondedor_esperando'):
+                self._respondedor_esperando = set()
+            self._respondedor_esperando.add(contact_id)
         
         elif text == "RECONNECT_TIMEOUT":
             self.db.set_contact_connected(contact_id, False)
@@ -554,16 +558,19 @@ class ChatGUI:
             self.db.set_contact_connected(contact_id, True)
             received_msg_id = self.db.add_message(contact_id, real_cn, text, "received", ts, msg_id=msg_id)
             
-            # SI SOY EL RESPONDEDOR Y NO HE ENVIADO PENDIENTES AÚN
-            if contact_id in self.protocol.role and self.protocol.role.get((addr[0], addr[1])) == "responder":
-                if contact_id not in self.sending_pending:
-                    # Envía los tuyos ahora que recibiste del iniciador
-                    self.send_pending_messages(contact_id, addr[0], addr[1])
+            # SI SOY RESPONDEDOR Y ESTOY ESPERANDO: ahora envío mis pendientes
+            if not hasattr(self, '_respondedor_esperando'):
+                self._respondedor_esperando = set()
+            
+            if contact_id in self._respondedor_esperando:
+                self._respondedor_esperando.discard(contact_id)
+                self.send_pending_messages(contact_id, addr[0], addr[1])
             
             if self.current_cn == contact_id:
                 self.db.mark_message_as_read_by_id(contact_id, received_msg_id)
         
         self.refresh_ui()
+
 
     def send_pending_messages(self, cn, ip, port):
         """Envía todos los mensajes pendientes de un contacto (UNA SOLA VEZ)."""
