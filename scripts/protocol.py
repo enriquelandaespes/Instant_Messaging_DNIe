@@ -30,7 +30,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         # No restaurar sesiones automáticamente: se usarán PKT_RECONNECT + clave guardada
         if self.callback:
             self.callback(None, "SESSIONS_READY", "System", None)
-
+ 
     def datagram_received(self, data, addr):
         if len(data) < 5:
             return
