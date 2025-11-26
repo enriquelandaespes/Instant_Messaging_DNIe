@@ -517,7 +517,7 @@ class ChatGUI:
         
         ts = datetime.now().strftime("%H:%M")
         
-        if text == "HANDSHAKE_OK":
+        if text == "HANDSHAKE_OK_INIT":
             self.db.set_contact_connected(contact_id, True)
             msgs = self.db.get_history(contact_id)
             user_msgs = [m for m in msgs if m.get('sender') != "Sys"]
@@ -525,6 +525,17 @@ class ChatGUI:
                 self.db.add_message(contact_id, "Sys", "🔒 Conexión segura establecida", "system", ts)
             self.protocol.enviar_pending_send(addr[0], addr[1])
             self.send_pending_messages(contact_id, addr[0], addr[1], lambda: self.protocol.enviar_pending_done(addr[0], addr[1]))
+        
+        elif text == "HANDSHAKE_OK_RESP":
+            self.db.set_contact_connected(contact_id, True)
+            msgs = self.db.get_history(contact_id)
+            user_msgs = [m for m in msgs if m.get('sender') != "Sys"]
+            if len(user_msgs) == 0:
+                self.db.add_message(contact_id, "Sys", "🔒 Conexión segura establecida", "system", ts)
+            self._respondedor_esperando_done[contact_id] = False
+
+        elif text == "PEER_FINISHED_SENDING":
+            pass
         
         elif text == "SESSION_RESTORED_INIT":
             self.db.set_contact_connected(contact_id, True)

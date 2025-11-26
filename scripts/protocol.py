@@ -114,8 +114,15 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 peer_cert=cert_bytes.hex()
             )
             
+            if is_response:
+                self.role[addr] = "initiator"
+                cb_msg = "HANDSHAKE_OK_INIT"
+            else:
+                self.role[addr] = "responder"
+                cb_msg = "HANDSHAKE_OK_RESP"
+
             if self.callback:
-                self.callback(addr, "HANDSHAKE_OK", nombre, None)
+                self.callback(addr, cb_msg, nombre, None)
             
             if not is_response:
                 self.enviar_paquete_credenciales(addr[0], addr[1], tipo=PKT_HANDSHAKE_RESP)
@@ -351,8 +358,14 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             return
         session = self.sessions[addr]
         nombre = session.get('name', 'Unknown')
-        if self.callback:
-            self.callback(addr, "SEND_MY_PENDING", nombre, None)
+        
+        role = self.role.get(addr)
+        if role == "responder":
+            if self.callback:
+                self.callback(addr, "SEND_MY_PENDING", nombre, None)
+        else:
+            if self.callback:
+                self.callback(addr, "PEER_FINISHED_SENDING", nombre, None)
 
     async def check_reconnect_timeouts(self):
         while True:
