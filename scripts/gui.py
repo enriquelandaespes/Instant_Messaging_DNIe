@@ -535,18 +535,6 @@ class ChatGUI:
             if not self.current_cn:
                 self.current_cn = contact_id
         
-        # Si hay mensajes pendientes, iniciar reintento automático
-        pending = self.db.get_pending_messages(contact_id)
-        if pending:
-            # Iniciar tarea de reintento si no está ya corriendo
-            if self._retry_pending_task is None or self._retry_pending_task.done():
-                self._retry_pending_task = asyncio.create_task(self._auto_retry_pending())
-            
-            # Intentar handshake inmediatamente si no hay sesión
-            if not self.protocol.tiene_sesion(ip, port):
-                self.protocol.enviar_handshake(ip, port, cn=contact_id)
-                self.pending_handshakes.add(contact_id)
-        
         self.refresh_ui()
 
     def on_protocol_msg(self, addr, text, real_cn, msg_id=None):
@@ -554,8 +542,14 @@ class ChatGUI:
             asyncio.create_task(self.auto_connect_and_send_all())
             return
         
-        # Ignorar mensajes de sistema del protocolo para que no salgan en el chat
-        if text in ["SESSION_RESTORED", "HANDSHAKE_OK"]:
+        # Cuando se restaura/establece sesión, enviar mensajes pendientes
+        if text in ["SESSION_RESTORED", "HANDSHAKE_OK", "PEER_RECONNECTED"]:
+            # Buscar el contacto por addr
+            for cn, info in self.db.get_all_contacts().items():
+                if info.get("ip") == addr[0] and info.get("port") == addr[1]:
+                    self.db.set_contact_connected(cn, True)
+                    self.check_pending_messages(cn, addr[0], addr[1])
+                    break
             self.refresh_ui()
             return
         
@@ -778,6 +772,7 @@ class ChatGUI:
         await asyncio.sleep(0.5)
         all_contacts = self.db.get_all_contacts()
         
+        # Enviar PKT_RECONNECT a todos los contactos para avisar que estamos disponibles
         for cn, info in all_contacts.items():
             ip = info.get("ip")
             port = info.get("port")
@@ -785,19 +780,9 @@ class ChatGUI:
             if not ip or not port:
                 continue
             
-            original_cn = self.current_cn
-            self.current_cn = cn
-            await self.handle_enter()
-            self.current_cn = original_cn
-            
-            await asyncio.sleep(0.2)
-            
-            if self.protocol.tiene_sesion(ip, port):
-                pending = self.db.get_pending_messages(cn)
-                if pending:
-                    for msg in pending:
-                        if self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id']):
-                            self.db.mark_message_status(cn, msg['id'], "sent")
+            # Intentar restaurar sesión desde BD y enviar PKT_RECONNECT
+            self.protocol.enviar_handshake(ip, port, cn=cn)
+            await asyncio.sleep(0.1)
         
         self.refresh_ui()
 
