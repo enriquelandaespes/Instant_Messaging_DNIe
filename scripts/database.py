@@ -147,9 +147,6 @@ class JsonDatabase:
     def get_all_contacts(self):
         return self.data.get("contacts", {})
 
-    def get_contact_info(self, cn):
-        return self.data["contacts"].get(cn,{})
-
     def add_or_update_contact(self, cn, **kwargs):
         if cn not in self.data["contacts"]:
             self.data["contacts"][cn] = {
