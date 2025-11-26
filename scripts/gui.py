@@ -523,15 +523,28 @@ class ChatGUI:
             user_msgs = [m for m in msgs if m.get('sender') != "Sys"]
             if len(user_msgs) == 0:
                 self.db.add_message(contact_id, "Sys", "🔒 Conexión segura establecida", "system", ts)
+            # Avisa que voy a enviar pendientes
+            self.protocol.enviar_pending_send(addr[0], addr[1])
             self.send_pending_messages(contact_id, addr[0], addr[1])
         
-        # SESSION RESTAURADA: ambos envían pendientes YA, sin esperar nada
         elif text == "SESSION_RESTORED_INIT":
             self.db.set_contact_connected(contact_id, True)
+            # Avisa que voy a enviar pendientes
+            self.protocol.enviar_pending_send(addr[0], addr[1])
             self.send_pending_messages(contact_id, addr[0], addr[1])
         
         elif text == "SESSION_RESTORED_RESP":
             self.db.set_contact_connected(contact_id, True)
+            # El respondedor espera a PEER_SENDING_PENDING
+        
+        elif text == "PEER_SENDING_PENDING":
+            # El peer está enviando sus pendientes, yo solo recibo
+            pass
+        
+        elif text == "SEND_MY_PENDING":
+            # El peer terminó, ahora envío los míos
+            # Avisa que voy a enviar
+            self.protocol.enviar_pending_send(addr[0], addr[1])
             self.send_pending_messages(contact_id, addr[0], addr[1])
         
         elif text == "RECONNECT_TIMEOUT":
@@ -559,10 +572,13 @@ class ChatGUI:
         self.refresh_ui()
 
 
+
     def send_pending_messages(self, cn, ip, port):
-        """Envía todos los mensajes pendientes de un contacto (UNA SOLA VEZ)."""
+        """Envía todos los mensajes pendientes y luego manda PENDING_DONE"""
         pending = self.db.get_pending_messages(cn)
         if not pending or cn in self.sending_pending:
+            # Si no hay pendientes, igual envía DONE
+            self.protocol.enviar_pending_done(ip, port)
             return
         
         if not self.protocol.tiene_sesion(ip, port):
@@ -585,9 +601,12 @@ class ChatGUI:
                         break
             
             self.sending_pending.discard(cn)
+            # IMPORTANTE: Avisa que terminé
+            self.protocol.enviar_pending_done(ip, port)
             self.refresh_ui()
         
         asyncio.create_task(send_all_async())
+
 
     async def handle_enter(self):
         if self.current_cn in ["__MI_CUENTA__", "__AYUDA__"]:

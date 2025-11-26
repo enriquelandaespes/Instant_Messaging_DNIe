@@ -15,6 +15,8 @@ PKT_HANDSHAKE_RESP = 0x03
 PKT_ACK = 0x04
 PKT_RECONNECT_REQ = 0x05
 PKT_RECONNECT_RESP = 0x06
+PKT_PENDING_SEND = 0x07
+PKT_PENDING_DONE = 0x08
 
 class SecureIMProtocol(asyncio.DatagramProtocol):
     def __init__(self, dnie_manager, db, on_msg_callback):
@@ -51,6 +53,10 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             asyncio.create_task(self.handle_reconnect_req(payload, addr))
         elif msg_type == PKT_RECONNECT_RESP:
             asyncio.create_task(self.handle_reconnect_resp(payload, addr))
+        elif msg_type == PKT_PENDING_SEND:
+            asyncio.create_task(self.handle_pending_send(payload, addr))
+        elif msg_type == PKT_PENDING_DONE:
+            self.handle_pending_done(payload, addr)
 
     async def handle_handshake(self, payload, addr, is_response):
         if addr in self.sessions:
@@ -309,6 +315,44 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 self.db.set_contact_connected(cn, True)
                 if self.callback:
                     self.callback(addr, "SESSION_RESTORED_INIT", session.get("name", "Unknown"), None)
+
+    def enviar_pending_send(self, ip, port):
+        """Avisa que voy a enviar pendientes"""
+        if not self.transport:
+            return
+        try:
+            packet = struct.pack("B", PKT_PENDING_SEND) + self.my_cid
+            self.transport.sendto(packet, (ip, port))
+        except Exception:
+            pass
+
+    def enviar_pending_done(self, ip, port):
+        """Avisa que terminé de enviar pendientes"""
+        if not self.transport:
+            return
+        try:
+            packet = struct.pack("B", PKT_PENDING_DONE) + self.my_cid
+            self.transport.sendto(packet, (ip, port))
+        except Exception:
+            pass
+
+    async def handle_pending_send(self, payload, addr):
+        """Recibe PENDING_SEND: el peer va a mandar sus pendientes"""
+        if addr not in self.sessions:
+            return
+        session = self.sessions[addr]
+        nombre = session.get('name', 'Unknown')
+        if self.callback:
+            self.callback(addr, "PEER_SENDING_PENDING", nombre, None)
+
+    def handle_pending_done(self, payload, addr):
+        """Recibe PENDING_DONE: el peer terminó de mandar sus pendientes"""
+        if addr not in self.sessions:
+            return
+        session = self.sessions[addr]
+        nombre = session.get('name', 'Unknown')
+        if self.callback:
+            self.callback(addr, "SEND_MY_PENDING", nombre, None)
 
     async def check_reconnect_timeouts(self):
         while True:
