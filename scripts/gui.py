@@ -467,93 +467,88 @@ class ChatGUI:
 
     def on_protocol_msg(self, addr, text, real_cn, msg_id=None):
         """
-        Procesa los eventos recibidos del protocolo.
-        Solo el lado que INICIA la reconexión manda mensajes pendientes.
-        El lado que responde a un reconnect solo restaura la sesión y espera recibir mensajes.
+        Maneja eventos del protocolo.
         """
+        
         if text == "SESSIONS_READY":
             asyncio.create_task(self.auto_connect_and_send_all())
             return
-
-        # 2. Si addr es None por cualquier motivo (NUNCA debería salvo SESSIONS_READY), salta el resto
+        
         if addr is None:
             return
-
-    
-        # Determinamos el contact_id
+        
+        # Buscar contact_id
         contact_id = None
-        for cn, info in self.db.get_all_contacts().items():
+        all_contacts = self.db.get_all_contacts()
+        
+        for cn, info in all_contacts.items():
             if info.get("ip") == addr[0] and info.get("port") == addr[1]:
                 contact_id = cn
                 break
+        
         if not contact_id:
             contact_id = f"{addr[0]}:{addr[1]}"
-
-        # Limpieza del pending_handshakes
+        
+        # Limpiar pending_handshakes
         if contact_id in self.pending_handshakes:
             self.pending_handshakes.discard(contact_id)
-
+        
+        # Actualizar contacto
         self.db.add_or_update_contact(contact_id, name=real_cn, ip=addr[0], port=addr[1])
         if contact_id not in self.contact_keys:
             self.contact_keys.append(contact_id)
             self.contact_keys.sort()
-
+        
         ts = datetime.now().strftime("%H:%M")
-
-        # Handshake inicial normal
+        
+        # HANDSHAKE inicial
         if text == "HANDSHAKE_OK":
             self.db.set_contact_connected(contact_id, True)
             msgs = self.db.get_history(contact_id)
             user_msgs = [m for m in msgs if m.get('sender') != "Sys"]
             if len(user_msgs) == 0:
                 self.db.add_message(contact_id, "Sys", "🔒 Conexión segura establecida", "system", ts)
-
-        # Conexión restaurada (YO inicie el PKT_RECONNECT → me han confirmado: ahora sí mando pendientes)
-        elif text in ("SESSION_RESTORED", "PEER_RECONNECTED"):
+            # Enviar mensajes pendientes tras handshake
+            self.send_pending_messages(contact_id, addr[0], addr[1])
+        
+        # Sesión restaurada (PKT_RECONNECT confirmado o respondido)
+        elif text == "SESSION_RESTORED":
             self.db.set_contact_connected(contact_id, True)
-            # Compruebo si yo estaba esperando la confirmación (es decir, mi reconnect_pending), así solo el que inicia envía pendientes.
-            if hasattr(self.protocol, "reconnect_pending") and (addr not in self.protocol.reconnect_pending):
-                # Es decir, yo NO fui el lado iniciador: solo actualizo contacto como conectado,
-                # pero NO envío mensajes pendientes.
-                # (Simplemente refresco UI y espero mensajes del peer)
-                self.refresh_ui()
-                return
-            else:
-                # YO inicie, ahora está confirmada la sesión: mando mis pendientes
-                self.send_pending_messages(contact_id, addr[0], addr[1])
-                if hasattr(self.protocol, "reconnect_pending") and addr in self.protocol.reconnect_pending:
-                    self.protocol.reconnect_pending.pop(addr, None)
-
+            # Enviar mensajes pendientes
+            self.send_pending_messages(contact_id, addr[0], addr[1])
+        
+        # Peer se reconectó
+        elif text == "PEER_RECONNECTED":
+            self.db.set_contact_connected(contact_id, True)
+        
         # Timeout de reconexión
         elif text == "RECONNECT_TIMEOUT":
             self.db.set_contact_connected(contact_id, False)
             self.refresh_ui()
             return
-
+        
         elif text.startswith("HANDSHAKE_ERROR"):
             self.db.set_contact_connected(contact_id, False)
-
+        
         elif text == "ERROR_DESCIFRADO":
             pass
-
+        
+        # ACK recibido
         elif text.startswith("ACK|"):
             ack_msg_id = text.split('|', 1)[1]
             self.db.mark_message_status(contact_id, ack_msg_id, "delivered")
-
+        
+        # Mensaje normal recibido
         else:
-            # Mensaje normal recibido (el usuario contestó: ahora ya puedo enviarle los pendientes, si tengo)
             self.db.set_contact_connected(contact_id, True)
             received_msg_id = self.db.add_message(contact_id, real_cn, text, "received", ts, msg_id=msg_id)
             if self.current_cn == contact_id:
                 self.db.mark_message_as_read_by_id(contact_id, received_msg_id)
                 if self.scroll_offset == 0:
                     self.scroll_offset = 0
-            # Si yo no fui el primer lado en enviar y tengo pendientes, los mando tras recibir el PRIMER mensaje tras reconectar.
-            if hasattr(self.protocol, "reconnect_pending") and addr in self.protocol.reconnect_pending:
-                self.send_pending_messages(contact_id, addr[0], addr[1])
-                self.protocol.reconnect_pending.pop(addr, None)
-
+        
         self.refresh_ui()
+
 
 
 
@@ -576,6 +571,7 @@ class ChatGUI:
                 break
         
         self.refresh_ui()
+
 
     async def handle_enter(self):
         if self.current_cn in ["__MI_CUENTA__", "__AYUDA__"]:

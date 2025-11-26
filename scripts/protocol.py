@@ -2,6 +2,7 @@ import asyncio
 import struct
 import os
 import hashlib
+import time
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.asymmetric import x25519
 from cryptography import x509
@@ -87,7 +88,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 'state': 'ESTABLISHED'
             }
             
-            # Buscar si ya existe contacto con esta IP/puerto
             existing_cn = None
             all_contacts = self.db.get_all_contacts()
             for cn, info in all_contacts.items():
@@ -95,7 +95,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                     existing_cn = cn
                     break
             
-            # Guardar en BD
             contact_id = existing_cn if existing_cn else nombre
             self.db.add_or_update_contact(
                 contact_id,
@@ -109,7 +108,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             if self.callback:
                 self.callback(addr, "HANDSHAKE_OK", nombre, None)
             
-            # Si recibimos INIT, responder con RESP
             if not is_response:
                 self.enviar_paquete_credenciales(addr[0], addr[1], tipo=PKT_HANDSHAKE_RESP)
                 
@@ -143,27 +141,20 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             pass
 
     def enviar_handshake(self, ip, port, cn=None):
-        """
-        Decide si enviar PKT_RECONNECT (si hay session_key guardada) o PKT_HANDSHAKE_INIT (primera vez).
-        """
         addr = (ip, port)
 
-        # Si ya hay sesión en memoria, no hacer nada
         if addr in self.sessions:
             return True
         
-        # Buscar session_key guardada
         saved_key = None
         contact_name = None
         
-        # 1. Buscar por CN
         if cn:
             contact_info = self.db.get_contact_info(cn)
             if contact_info:
                 saved_key = contact_info.get("session_key")
                 contact_name = contact_info.get("name", cn)
         
-        # 2. Buscar por IP/puerto
         if not saved_key:
             all_contacts = self.db.get_all_contacts()
             for name, info in all_contacts.items():
@@ -173,7 +164,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                         contact_name = info.get("name", name)
                         break
         
-        # Si hay clave guardada: restaurar sesión y enviar PKT_RECONNECT
         if saved_key:
             try:
                 if isinstance(saved_key, str):
@@ -189,21 +179,16 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 
                 final_cn = cn if cn else contact_name
                 
-                # Marcar como pendiente de confirmación (5 segundos)
                 self.reconnect_pending[addr] = {
                     'cn': final_cn,
                     'timestamp': asyncio.get_event_loop().time()
                 }
                 
-                # NO notificar SESSION_RESTORED aquí, esperar confirmación
-                
-                # Enviar PKT_RECONNECT (sin credenciales)
                 self.enviar_reconnect(ip, port)
                 return True
             except Exception:
                 pass
         
-        # No hay clave: handshake inicial completo
         self.enviar_paquete_credenciales(ip, port, tipo=PKT_HANDSHAKE_INIT)
         return False
 
@@ -211,7 +196,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         addr = (ip, port)
         if addr in self.sessions:
             del self.sessions[addr]
-        # También limpiar de pendientes
         if addr in self.reconnect_pending:
             del self.reconnect_pending[addr]
 
@@ -277,15 +261,11 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             pass
 
     def handle_reconnect(self, payload, addr):
-        """
-        Recibe PKT_RECONNECT: restaura sesión desde BD y responde con PKT_RECONNECT.
-        Envía sesión y mensajes pendientes SOLO en el lado que responde por PRIMERA vez.
-        """
-        # CASO 1: Recibimos confirmación en respuesta a nuestro propio PKT_RECONNECT.
+        # CASO 1: Confirmación a mi PKT_RECONNECT
         if addr in self.reconnect_pending:
             info = self.reconnect_pending.pop(addr)
             cn = info['cn']
-            # Confirmamos sesión y solo actualizamos estado, NO enviamos mensajes pendientes.
+            
             if addr in self.sessions:
                 session = self.sessions[addr]
                 contact_name = session.get('name', 'Unknown')
@@ -293,10 +273,9 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 if self.callback:
                     self.callback(addr, "SESSION_RESTORED", contact_name, None)
             return
-
-        # CASO 2: NO teníamos sesión ni reconnect_pending: somos el responder PRIMARIO.
+        
+        # CASO 2: Recibo primer PKT_RECONNECT del peer (yo respondo)
         if addr not in self.sessions:
-            # Buscar contacto por IP/puerto en la BD
             all_contacts = self.db.get_all_contacts()
             for cn, info in all_contacts.items():
                 if info.get('ip') == addr[0] and info.get('port') == addr[1]:
@@ -311,19 +290,24 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                             'state': 'ESTABLISHED'
                         }
                         self.db.set_contact_connected(cn, True)
-                        # RESPONDEMOS con nuestro PKT_RECONNECT - confirmación.
+                        
+                        # Responder con PKT_RECONNECT
                         self.enviar_reconnect(addr[0], addr[1])
-                        # Notificamos a la GUI que este lado debe ENVIAR todos los mensajes pendientes.
+                        
+                        # Sleep de 3 segundos para fijar sesión antes de enviar pendientes
+                        time.sleep(3)
+                        
                         if self.callback:
-                            self.callback(addr, "SESSION_RESTORED_SEND", info.get("name", cn), None)
+                            self.callback(addr, "SESSION_RESTORED", info.get("name", cn), None)
                         return
                     except Exception:
                         pass
             return
-
-        # CASO 3: Sesión ya OK y no estábamos esperando confirmación; solo actualizar estado.
+        
+        # CASO 3: Ya tenemos sesión, solo notificar
         session = self.sessions[addr]
         contact_name = session.get('name', 'Unknown')
+        
         all_contacts = self.db.get_all_contacts()
         for cn, info in all_contacts.items():
             if info.get('ip') == addr[0] and info.get('port') == addr[1]:
@@ -331,7 +315,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 if self.callback:
                     self.callback(addr, "PEER_RECONNECTED", contact_name, None)
                 return
-
 
     def enviar_reconnect(self, ip, port):
         if not self.transport:
@@ -347,9 +330,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             return False
 
     async def check_reconnect_timeouts(self):
-        """
-        Verifica si hay reconexiones pendientes que no respondieron en 5 segundos.
-        """
         while True:
             await asyncio.sleep(1)
             
@@ -364,10 +344,8 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 info = self.reconnect_pending.pop(addr)
                 cn = info['cn']
                 
-                # Cerrar sesión local
                 if addr in self.sessions:
                     del self.sessions[addr]
                 
-                # Notificar a GUI que el contacto está offline
                 if self.callback:
                     self.callback(addr, "RECONNECT_TIMEOUT", cn, None)
