@@ -1,3 +1,4 @@
+# main.py
 import asyncio
 import sys
 import config
@@ -45,10 +46,8 @@ async def main():
     def protocol_callback(addr, text, nombre, msg_id=None):
         gui.on_protocol_msg(addr, text, nombre, msg_id)
 
-    # AQUÍ PASAMOS LA DB AL PROTOCOLO
     protocol = SecureIMProtocol(dnie, db, protocol_callback)
     
-    # Obtener IP local antes de crear la GUI
     mdns_temp = DiscoveryService(port, my_nick, lambda n, i, p: None)
     my_ip = mdns_temp.get_lan_ip()
     
@@ -62,9 +61,8 @@ async def main():
     def discovery_callback(name, ip, p):
         contact_id = f"{ip}:{p}"
         existing = db.get_contact_info(contact_id)
-        if existing:
-            if existing.get("name") == name:
-                return
+        if existing and existing.get("name") == name:
+            return
         gui.add_peer(name, ip, p)
         
     mdns = DiscoveryService(port, my_nick, discovery_callback)
