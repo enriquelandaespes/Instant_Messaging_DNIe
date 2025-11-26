@@ -48,12 +48,15 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             self.handle_reconnect(payload, addr)
 
     async def handle_handshake(self, payload, addr, is_response):
+        # Si YA tenemos sesión para este addr, ignorar handshake duplicado
         if addr in self.sessions:
             return
+        
         try:
             offset = 0
             if len(payload) < 32:
                 return
+            
             peer_pub_bytes = payload[offset:offset+32]
             offset += 32
             
@@ -74,10 +77,12 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             except:
                 nombre = "Error Certificado"
             
+            # Calcular clave compartida
             peer_key_obj = x25519.X25519PublicKey.from_public_bytes(peer_pub_bytes)
             shared_secret = self.dnie.private_key.exchange(peer_key_obj)
             session_key = hashlib.blake2s(shared_secret, digest_size=32).digest()
             
+            # Crear sesión
             self.sessions[addr] = {
                 'cipher': ChaCha20Poly1305(session_key),
                 'name': nombre,
@@ -92,7 +97,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                     existing_cn = cn
                     break
             
-            # Actualizar o crear contacto con el nombre del certificado
+            # Guardar contacto en BD con session_key
             contact_id = existing_cn if existing_cn else nombre
             self.db.add_or_update_contact(
                 contact_id,
@@ -103,14 +108,18 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 peer_cert=cert_bytes.hex()
             )
             
+            # Notificar a GUI que el handshake está completo
             if self.callback:
                 self.callback(addr, "HANDSHAKE_OK", nombre, None)
             
+            # Si recibimos PKT_HANDSHAKE_INIT, RESPONDER con PKT_HANDSHAKE_RESP
             if not is_response:
                 self.enviar_paquete_credenciales(addr[0], addr[1], tipo=PKT_HANDSHAKE_RESP)
                 
-        except Exception:
+        except Exception as e:
+            # Si hay error, NO crear sesión
             pass
+
 
     def handle_message(self, payload, addr):
         if addr not in self.sessions:
