@@ -745,8 +745,8 @@ class ChatGUI:
                 self.scroll_offset = 0  # Auto-scroll al final
                 self.w_input.text = ""
             if self.current_cn not in self.pending_handshakes:
-                contact_name = info.get("name", self.current_cn)
-                self.protocol.enviar_handshake(ip, port, cn=contact_name)
+                # FIX: Pasar self.current_cn (ID) en lugar del nombre para que encuentre la session_key
+                self.protocol.enviar_handshake(ip, port, cn=self.current_cn)
                 self.pending_handshakes.add(self.current_cn)
                 self.refresh_ui()
             return
