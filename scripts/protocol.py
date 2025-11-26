@@ -276,7 +276,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 ip = info.get("ip")
                 port = info.get("port")
                 name = info.get("name", cn)
-                
+                 
                 if session_key_hex and ip and port:
                     try:
                         session_key = bytes.fromhex(session_key_hex)

@@ -783,40 +783,8 @@ class ChatGUI:
             # Intentar restaurar sesión desde BD y enviar PKT_RECONNECT
             self.protocol.enviar_handshake(ip, port, cn=cn)
             await asyncio.sleep(0.1)
-        
+         
         self.refresh_ui()
-
-    async def retry_pending_messages(self):
-        await asyncio.sleep(2)
-        
-        while True:
-            await asyncio.sleep(3)
-            
-            for cn in list(self.contact_keys):
-                info = self.db.get_contact_info(cn)
-                if not info:
-                    continue
-                    
-                ip = info.get("ip")
-                port = info.get("port")
-                
-                if not ip or not port:
-                    continue
-                
-                pending = self.db.get_pending_messages(cn)
-                if not pending:
-                    continue
-                
-                if self.protocol.tiene_sesion(ip, port):
-                    enviados = 0
-                    for msg in pending:
-                        if self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id']):
-                            self.db.mark_message_status(cn, msg['id'], "sent")
-                            enviados += 1
-                    
-                    if enviados > 0:
-                        self.db.set_contact_connected(cn, True)
-                        self.refresh_ui()
 
     async def check_ack_timeouts(self):
         while True:

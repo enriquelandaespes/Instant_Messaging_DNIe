@@ -218,7 +218,7 @@ class JsonDatabase:
                     msg["sent_timestamp"] = None
                 self.save()
                 return
-
+ 
     def get_pending_messages(self, cn):
         return [m for m in self.get_history(cn) if m["status"] == "pending"]
 

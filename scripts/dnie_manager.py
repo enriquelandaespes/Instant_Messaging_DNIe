@@ -62,7 +62,7 @@ class DNIeManager:
         """Devuelve el número de serie del certificado."""
         cert = x509.load_der_x509_certificate(self.cert_der, default_backend())
         return cert.serial_number
-
+ 
     def sign_data(self, data: bytes) -> bytes:
         """Firma datos arbitrarios usando la clave privada del DNIe."""
         token = self.get_token()
