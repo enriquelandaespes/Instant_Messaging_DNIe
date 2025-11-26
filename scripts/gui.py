@@ -515,23 +515,29 @@ class ChatGUI:
                 self.db.add_message(contact_id, "Sys", "🔒 Conexión segura establecida", "system", ts)
             self.send_pending_messages(contact_id, addr[0], addr[1])
         
-        # SESSION_RESTORED: solo el RESPONDEDOR manda pendientes aquí
+        # SESSION_RESTORED: AMBOS envían pendientes tras 1 segundo
         elif text == "SESSION_RESTORED":
             self.db.set_contact_connected(contact_id, True)
-            # Solo enviar pendientes si NO estoy esperando recibir para enviar
-            if contact_id not in self.need_to_send_after_receive:
+            
+            async def delayed_send():
+                await asyncio.sleep(1.0)
                 self.send_pending_messages(contact_id, addr[0], addr[1])
+            
+            asyncio.create_task(delayed_send())
         
-        # PEER_RECONNECTED: soy el INICIADOR, debo esperar a recibir algo antes de enviar
+        # PEER_RECONNECTED: también enviar tras 1 segundo
         elif text == "PEER_RECONNECTED":
             self.db.set_contact_connected(contact_id, True)
-            self.need_to_send_after_receive.add(contact_id)
+            
+            async def delayed_send():
+                await asyncio.sleep(1.0)
+                self.send_pending_messages(contact_id, addr[0], addr[1])
+            
+            asyncio.create_task(delayed_send())
         
         # RECONNECT_TIMEOUT
         elif text == "RECONNECT_TIMEOUT":
             self.db.set_contact_connected(contact_id, False)
-            if contact_id in self.need_to_send_after_receive:
-                self.need_to_send_after_receive.discard(contact_id)
             self.refresh_ui()
             return
         
@@ -545,11 +551,6 @@ class ChatGUI:
         elif text.startswith("ACK|"):
             ack_msg_id = text.split('|', 1)[1]
             self.db.mark_message_status(contact_id, ack_msg_id, "delivered")
-            
-            # Si estaba esperando recibir algo para enviar pendientes, ahora los envío
-            if contact_id in self.need_to_send_after_receive:
-                self.send_pending_messages(contact_id, addr[0], addr[1])
-                self.need_to_send_after_receive.discard(contact_id)
         
         # Mensaje normal recibido
         else:
@@ -559,13 +560,9 @@ class ChatGUI:
                 self.db.mark_message_as_read_by_id(contact_id, received_msg_id)
                 if self.scroll_offset == 0:
                     self.scroll_offset = 0
-            
-            # Si estaba esperando recibir algo para enviar pendientes, ahora los envío
-            if contact_id in self.need_to_send_after_receive:
-                self.send_pending_messages(contact_id, addr[0], addr[1])
-                self.need_to_send_after_receive.discard(contact_id)
         
         self.refresh_ui()
+
 
     def send_pending_messages(self, cn, ip, port):
         """
