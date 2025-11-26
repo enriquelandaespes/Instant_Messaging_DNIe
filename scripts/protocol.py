@@ -48,7 +48,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             self.handle_reconnect(payload, addr)
 
     async def handle_handshake(self, payload, addr, is_response):
-        # Si YA tenemos sesión para este addr, ignorar handshake duplicado
+        # Si YA tenemos sesión, ignorar
         if addr in self.sessions:
             return
         
@@ -108,17 +108,17 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 peer_cert=cert_bytes.hex()
             )
             
-            # Notificar a GUI que el handshake está completo
+            # Notificar a GUI que el handshake completó
             if self.callback:
                 self.callback(addr, "HANDSHAKE_OK", nombre, None)
             
-            # Si recibimos PKT_HANDSHAKE_INIT, RESPONDER con PKT_HANDSHAKE_RESP
+            # IMPORTANTE: Si recibimos INIT, responder AUTOMÁTICAMENTE con RESP
             if not is_response:
                 self.enviar_paquete_credenciales(addr[0], addr[1], tipo=PKT_HANDSHAKE_RESP)
                 
         except Exception as e:
-            # Si hay error, NO crear sesión
             pass
+
 
 
     def handle_message(self, payload, addr):
