@@ -432,7 +432,7 @@ class ChatGUI:
     def refresh_ui(self):
         lines = []
         
-        # Contactos especiales primero
+        # Contactos especiales primero asi sale mejor
         special_contacts = ["__MI_CUENTA__", "__AYUDA__"]
         
         for special in special_contacts:
