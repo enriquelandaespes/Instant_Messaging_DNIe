@@ -577,14 +577,14 @@ class ChatGUI:
             pending = self.db.get_pending_messages(contact_id)
             
             if pending:
-                # Simular Enter para forzar la conexión antes de enviar
-                if self.current_cn == contact_id:
-                    asyncio.create_task(self.handle_enter())
+                # Hay mensajes pendientes, enviarlos con un delay inicial
+                async def send_with_delay():
+                    await asyncio.sleep(0.5)  # Delay para asegurar que la sesión está lista
+                    self.protocol.enviar_pending_send(addr[0], addr[1])
+                    await self.send_pending_messages(contact_id, addr[0], addr[1], 
+                                             lambda: self.protocol.enviar_pending_done(addr[0], addr[1]))
                 
-                # Hay mensajes pendientes, enviarlos
-                self.protocol.enviar_pending_send(addr[0], addr[1])
-                asyncio.create_task(self.send_pending_messages(contact_id, addr[0], addr[1], 
-                                         lambda: self.protocol.enviar_pending_done(addr[0], addr[1])))
+                asyncio.create_task(send_with_delay())
             else:
                 # No hay mensajes pendientes, solo confirmar con DONE
                 self.protocol.enviar_pending_send(addr[0], addr[1])
