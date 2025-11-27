@@ -532,8 +532,8 @@ class ChatGUI:
             
             # Iniciador empieza enviando
             self.protocol.enviar_pending_send(addr[0], addr[1])
-            self.send_pending_messages(contact_id, addr[0], addr[1], 
-                                     lambda: self.protocol.enviar_pending_done(addr[0], addr[1]))
+            asyncio.create_task(self.send_pending_messages(contact_id, addr[0], addr[1], 
+                                     lambda: self.protocol.enviar_pending_done(addr[0], addr[1])))
         
         elif text == "HANDSHAKE_OK_RESP":
             msgs = self.db.get_history(contact_id)
@@ -554,8 +554,8 @@ class ChatGUI:
             if pending:
                 # Hay mensajes pendientes, enviarlos
                 self.protocol.enviar_pending_send(addr[0], addr[1])
-                self.send_pending_messages(contact_id, addr[0], addr[1], 
-                                         lambda: self.protocol.enviar_pending_done(addr[0], addr[1]))
+                asyncio.create_task(self.send_pending_messages(contact_id, addr[0], addr[1], 
+                                         lambda: self.protocol.enviar_pending_done(addr[0], addr[1])))
             else:
                 # No hay mensajes pendientes, enviar DONE directamente para que el peer sepa que puede enviar
                 self.protocol.enviar_pending_send(addr[0], addr[1])
@@ -576,8 +576,8 @@ class ChatGUI:
             if pending:
                 # Hay mensajes pendientes, enviarlos
                 self.protocol.enviar_pending_send(addr[0], addr[1])
-                self.send_pending_messages(contact_id, addr[0], addr[1], 
-                                         lambda: self.protocol.enviar_pending_done(addr[0], addr[1]))
+                asyncio.create_task(self.send_pending_messages(contact_id, addr[0], addr[1], 
+                                         lambda: self.protocol.enviar_pending_done(addr[0], addr[1])))
             else:
                 # No hay mensajes pendientes, solo confirmar con DONE
                 self.protocol.enviar_pending_send(addr[0], addr[1])
@@ -606,7 +606,7 @@ class ChatGUI:
         
         self.refresh_ui()
 
-    def send_pending_messages(self, cn, ip, port, callback=None):
+    async def send_pending_messages(self, cn, ip, port, callback=None):
         """Envía mensajes con reintentos automáticos y espera a ACKs"""
         pending = self.db.get_pending_messages(cn)
         if not pending or cn in self.sending_pending:
@@ -620,46 +620,46 @@ class ChatGUI:
         
         self.sending_pending.add(cn)
         
-        async def send_all_async():
-            target_ids = [m['id'] for m in pending]
-            timeout_total = 15.0
-            start_time = asyncio.get_event_loop().time()
-            
-            while True:
-                all_delivered = True
-                current_status = {m['id']: m.get('status') for m in self.db.get_history(cn)}
-                
-                to_retry = []
-                for mid in target_ids:
-                    if current_status.get(mid) != 'delivered':
-                        all_delivered = False
-                        original_msg = next((m for m in pending if m['id'] == mid), None)
-                        if original_msg:
-                            to_retry.append(original_msg)
-                
-                if all_delivered:
-                    break
-                
-                if asyncio.get_event_loop().time() - start_time > timeout_total:
-                    break
-                
-                # Enviar / Reenviar
-                for msg in to_retry:
-                    self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
-                    if current_status.get(msg['id']) == 'pending':
-                         self.db.mark_message_status(cn, msg['id'], "sent")
-                    await asyncio.sleep(0.15)
-                
-                # Esperar ACKs
-                await asyncio.sleep(1.5)
-
-            self.sending_pending.discard(cn)
-            self.refresh_ui()
-            
-            if callback:
-                callback()
+        # Pequeño delay para asegurar que la sesión está lista
+        await asyncio.sleep(0.3)
         
-        asyncio.create_task(send_all_async())
+        target_ids = [m['id'] for m in pending]
+        timeout_total = 15.0
+        start_time = asyncio.get_event_loop().time()
+        
+        while True:
+            all_delivered = True
+            current_status = {m['id']: m.get('status') for m in self.db.get_history(cn)}
+            
+            to_retry = []
+            for mid in target_ids:
+                if current_status.get(mid) != 'delivered':
+                    all_delivered = False
+                    original_msg = next((m for m in pending if m['id'] == mid), None)
+                    if original_msg:
+                        to_retry.append(original_msg)
+            
+            if all_delivered:
+                break
+            
+            if asyncio.get_event_loop().time() - start_time > timeout_total:
+                break
+            
+            # Enviar / Reenviar
+            for msg in to_retry:
+                self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
+                if current_status.get(msg['id']) == 'pending':
+                     self.db.mark_message_status(cn, msg['id'], "sent")
+                await asyncio.sleep(0.15)
+            
+            # Esperar ACKs
+            await asyncio.sleep(1.5)
+
+        self.sending_pending.discard(cn)
+        self.refresh_ui()
+        
+        if callback:
+            callback()
 
     async def handle_enter(self):
         if self.current_cn in ["__MI_CUENTA__", "__AYUDA__"]:
