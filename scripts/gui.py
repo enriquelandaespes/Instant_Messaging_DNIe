@@ -578,11 +578,12 @@ class ChatGUI:
         
         self.refresh_ui()
 
+    
+        
     def send_pending_messages(self, cn, ip, port, callback=None):
-        """Envía todos los mensajes pendientes esperando a sus ACKs antes de terminar"""
+        """Envía mensajes y ESPERA a recibir los ACKs antes de ceder el turno"""
         pending = self.db.get_pending_messages(cn)
         if not pending or cn in self.sending_pending:
-            # Si no hay pendientes, llamamos al callback directamente para ceder el turno
             if callback:
                 callback()
             return
@@ -593,58 +594,54 @@ class ChatGUI:
         self.sending_pending.add(cn)
         
         async def send_all_async():
+            # Lista para rastrear los IDs de lo que acabamos de enviar
             sent_msg_ids = []
             
-            # 1. Fase de Envío
+            # 1. FASE DE ENVÍO
             for msg in pending:
                 success = self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
                 if success:
-                    # Marcamos como enviado localmente
                     self.db.mark_message_status(cn, msg['id'], "sent")
                     sent_msg_ids.append(msg['id'])
-                    # Pequeña pausa para no saturar el buffer UDP del SO
-                    await asyncio.sleep(0.1)
+                    # Pequeña pausa técnica para no saturar el buffer UDP
+                    await asyncio.sleep(0.05) 
                 else:
                     await asyncio.sleep(0.2)
                     success = self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
                     if success:
                         self.db.mark_message_status(cn, msg['id'], "sent")
                         sent_msg_ids.append(msg['id'])
-            
-            # 2. Fase de Espera de ACKs (LA CORRECCIÓN)
-            # No enviamos PENDING_DONE hasta que todos estén 'delivered' o haya timeout
-            wait_timeout = 5.0  # Esperar máximo 5 segundos por los ACKs
+
+            # 2. FASE DE ESPERA DE ACKS (La solución al bloqueo)
+            # No mandamos el DONE hasta asegurar que el otro lado recibió todo
+            wait_timeout = 5.0  # Timeout de seguridad
             start_wait = asyncio.get_event_loop().time()
             
             while sent_msg_ids:
                 all_acked = True
-                # Obtenemos el estado actual de los mensajes desde la DB
-                # (Es eficiente porque la DB se actualiza en el hilo principal via on_protocol_msg)
-                current_history = {m['id']: m for m in self.db.get_history(cn)}
+                # Consultamos el estado actual en BD (actualizado por on_protocol_msg)
+                history_map = {m['id']: m.get('status') for m in self.db.get_history(cn)}
                 
                 for mid in sent_msg_ids:
-                    msg_info = current_history.get(mid)
-                    # Si el mensaje no existe o no está delivered, aún falta el ACK
-                    if not msg_info or msg_info.get("status") != "delivered":
+                    # Si algún mensaje no está 'delivered', seguimos esperando
+                    if history_map.get(mid) != 'delivered':
                         all_acked = False
                         break
                 
                 if all_acked:
                     break
                 
+                # Si pasa mucho tiempo sin ACK, salimos para no bloquear eternamente
                 if asyncio.get_event_loop().time() - start_wait > wait_timeout:
-                    # Timeout de seguridad para evitar bloqueo eterno si se pierde un ACK
-                    # Podrías añadir un log aquí si quisieras
                     break
                 
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.1)
 
-            # 3. Finalización
+            # 3. FINALIZACIÓN Y CAMBIO DE TURNO
             self.sending_pending.discard(cn)
             self.refresh_ui()
             
-            # Solo ahora que hemos recibido los ACKs (o pasado el timeout), 
-            # enviamos el PENDING_DONE para que el otro par empiece.
+            # Ahora sí es seguro decir "He terminado"
             if callback:
                 callback()
         
