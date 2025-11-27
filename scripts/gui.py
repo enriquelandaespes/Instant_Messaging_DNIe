@@ -581,7 +581,7 @@ class ChatGUI:
     
         
     def send_pending_messages(self, cn, ip, port, callback=None):
-        """Envía mensajes y ESPERA a recibir los ACKs antes de ceder el turno"""
+        """Envía mensajes con reintentos automáticos si faltan ACKs"""
         pending = self.db.get_pending_messages(cn)
         if not pending or cn in self.sending_pending:
             if callback:
@@ -594,54 +594,57 @@ class ChatGUI:
         self.sending_pending.add(cn)
         
         async def send_all_async():
-            # Lista para rastrear los IDs de lo que acabamos de enviar
-            sent_msg_ids = []
+            # Lista de IDs que queremos enviar en este turno
+            target_ids = [m['id'] for m in pending]
             
-            # 1. FASE DE ENVÍO
-            for msg in pending:
-                success = self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
-                if success:
-                    self.db.mark_message_status(cn, msg['id'], "sent")
-                    sent_msg_ids.append(msg['id'])
-                    # Pequeña pausa técnica para no saturar el buffer UDP
-                    await asyncio.sleep(0.05) 
-                else:
-                    await asyncio.sleep(0.2)
-                    success = self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
-                    if success:
-                        self.db.mark_message_status(cn, msg['id'], "sent")
-                        sent_msg_ids.append(msg['id'])
-
-            # 2. FASE DE ESPERA DE ACKS (La solución al bloqueo)
-            # No mandamos el DONE hasta asegurar que el otro lado recibió todo
-            wait_timeout = 5.0  # Timeout de seguridad
-            start_wait = asyncio.get_event_loop().time()
+            # Tiempo límite total para intentar entregar este lote (15 seg)
+            timeout_total = 15.0
+            start_time = asyncio.get_event_loop().time()
             
-            while sent_msg_ids:
-                all_acked = True
-                # Consultamos el estado actual en BD (actualizado por on_protocol_msg)
-                history_map = {m['id']: m.get('status') for m in self.db.get_history(cn)}
+            while True:
+                # 1. Comprobar estado actual de los mensajes
+                all_delivered = True
+                # Obtenemos estado actualizado de la base de datos
+                current_status = {m['id']: m.get('status') for m in self.db.get_history(cn)}
                 
-                for mid in sent_msg_ids:
-                    # Si algún mensaje no está 'delivered', seguimos esperando
-                    if history_map.get(mid) != 'delivered':
-                        all_acked = False
-                        break
+                # Lista de los que todavía no han recibido ACK
+                to_retry = []
+                for mid in target_ids:
+                    if current_status.get(mid) != 'delivered':
+                        all_delivered = False
+                        # Recuperamos el objeto mensaje original para reenviarlo
+                        original_msg = next((m for m in pending if m['id'] == mid), None)
+                        if original_msg:
+                            to_retry.append(original_msg)
                 
-                if all_acked:
+                # Si todos tienen ACK, ¡hemos terminado!
+                if all_delivered:
                     break
                 
-                # Si pasa mucho tiempo sin ACK, salimos para no bloquear eternamente
-                if asyncio.get_event_loop().time() - start_wait > wait_timeout:
+                # Si excedemos el tiempo total de seguridad, paramos para no bloquear
+                if asyncio.get_event_loop().time() - start_time > timeout_total:
                     break
                 
-                await asyncio.sleep(0.1)
+                # 2. Enviar (o Reenviar) los mensajes pendientes
+                for msg in to_retry:
+                    self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
+                    
+                    # Actualizamos estado visual a 'sent' si estaba en 'pending'
+                    if current_status.get(msg['id']) == 'pending':
+                         self.db.mark_message_status(cn, msg['id'], "sent")
+                    
+                    # Pausa importante: 0.15s da tiempo a la red para respirar
+                    await asyncio.sleep(0.15)
+                
+                # 3. Esperar ACKs antes de la siguiente vuelta de comprobación
+                # Esperamos 1.5 segundos. Si llegan los ACKs, el próximo bucle detectará "all_delivered"
+                await asyncio.sleep(1.5)
 
-            # 3. FINALIZACIÓN Y CAMBIO DE TURNO
+            # --- FIN DEL PROCESO ---
             self.sending_pending.discard(cn)
             self.refresh_ui()
             
-            # Ahora sí es seguro decir "He terminado"
+            # Avisamos al protocolo de que ya hemos acabado (envía PENDING_DONE)
             if callback:
                 callback()
         
