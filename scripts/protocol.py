@@ -39,12 +39,10 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
     def datagram_received(self, data, addr):
         if len(data) < 5:
             return
-        
-        # Mantener viva la sesión si recibimos datos
-        self.touch_session(addr)
-        
         msg_type = data[0]
         payload = data[5:]
+        
+        self.touch_session(addr)
         
         if msg_type == PKT_HANDSHAKE_INIT:
             asyncio.create_task(self.handle_handshake(payload, addr, is_response=False))
@@ -66,9 +64,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
     def touch_session(self, addr):
         """Actualiza el timestamp para evitar timeout mientras hablamos"""
         if addr in self.reconnect_pending:
-             self.reconnect_pending[addr]['timestamp'] = asyncio.get_event_loop().time()
-        # Nota: las sesiones establecidas no tienen timestamp explícito en esta implementación
-        # simple, pero si lo tuvieran, aquí se actualizaría.
+            self.reconnect_pending[addr]['timestamp'] = asyncio.get_event_loop().time()
 
     async def handle_handshake(self, payload, addr, is_response):
         if addr in self.sessions:
@@ -132,7 +128,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             else:
                 self.role[addr] = "responder"
                 cb_msg = "HANDSHAKE_OK_RESP"
-
+            
             if self.callback:
                 self.callback(addr, cb_msg, nombre, None)
             
@@ -172,10 +168,9 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         addr = (ip, port)
 
         if addr in self.sessions:
-            # Si ya tenemos sesión, simulamos que enviamos reconnect para despertar la UI
             if self.callback:
-                 contact_name = self.sessions[addr].get('name', 'Unknown')
-                 # self.callback(addr, "SESSION_RESTORED_INIT", contact_name, None)
+                contact_name = self.sessions[addr].get('name', 'Unknown')
+                self.callback(addr, "SESSIONS_OK", contact_name, None)
             return True
         
         saved_key = None
@@ -377,7 +372,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         session = self.sessions[addr]
         nombre = session.get('name', 'Unknown')
         
-        # Si aún no he enviado mis pendientes, es mi turno ahora
         if not self.pending_sent.get(addr, False):
             self.pending_sent[addr] = True
             if self.callback:
@@ -398,9 +392,8 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 info = self.reconnect_pending.pop(addr)
                 cn = info['cn']
                 
-                # NO borramos la sesión si existe, solo el intento de reconexión pendiente
-                # if addr in self.sessions:
-                #    del self.sessions[addr]
+                if addr in self.sessions:
+                    del self.sessions[addr]
                 
                 if self.callback:
                     self.callback(addr, "RECONNECT_TIMEOUT", cn, None)

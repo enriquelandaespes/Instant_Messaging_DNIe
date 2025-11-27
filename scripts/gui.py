@@ -25,7 +25,7 @@ class ChatGUI:
         self._timeout_check_task = None
         self._reconnect_timeout_task = None
         self.sending_pending = set()
-        # Eliminamos flags complejos que causan bloqueos
+        self._pending_sent = {}
         
         self._last_line_count = 0
         self.scroll_offset = 0
@@ -486,7 +486,6 @@ class ChatGUI:
         if addr is None:
             return
         
-        # 1. Identificar contacto
         contact_id = None
         all_contacts = self.db.get_all_contacts()
         
@@ -500,10 +499,10 @@ class ChatGUI:
                 if info.get("name") == real_cn:
                     contact_id = cn
                     break
-            if not contact_id:
-                contact_id = real_cn
         
-        # 2. Registrar/Actualizar contacto
+        if not contact_id:
+            contact_id = real_cn
+        
         if contact_id in self.pending_handshakes:
             self.pending_handshakes.discard(contact_id)
         
@@ -516,79 +515,37 @@ class ChatGUI:
             self.contact_keys.append(contact_id)
             self.contact_keys.sort()
         
-        # 3. CRITICO: MARCAR COMO CONECTADO SIEMPRE QUE RECIBAMOS ALGO
-        # Esto soluciona que salga "Desconectado" mientras habla
-        self.db.set_contact_connected(contact_id, True)
-        self.refresh_ui()
-        
         ts = datetime.now().strftime("%H:%M")
         
-        # 4. Manejo de Mensajes Específicos
-        if text == "HANDSHAKE_OK_INIT":
+        if text in ["HANDSHAKE_OK_INIT", "HANDSHAKE_OK_RESP"]:
+            self.db.set_contact_connected(contact_id, True)
             msgs = self.db.get_history(contact_id)
             user_msgs = [m for m in msgs if m.get('sender') != "Sys"]
             if len(user_msgs) == 0:
                 self.db.add_message(contact_id, "Sys", "🔒 Conexión segura establecida", "system", ts)
-            
-            # Iniciador empieza enviando
+            # Siempre empieza el handshake enviando pendientes
             self.protocol.enviar_pending_send(addr[0], addr[1])
-            asyncio.create_task(self.send_pending_messages(contact_id, addr[0], addr[1], 
-                                     lambda: self.protocol.enviar_pending_done(addr[0], addr[1])))
-        
-        elif text == "HANDSHAKE_OK_RESP":
-            msgs = self.db.get_history(contact_id)
-            user_msgs = [m for m in msgs if m.get('sender') != "Sys"]
-            if len(user_msgs) == 0:
-                self.db.add_message(contact_id, "Sys", "🔒 Conexión segura establecida", "system", ts)
-            # Respondedor espera su turno
-
-        elif text == "PEER_FINISHED_SENDING":
-            # Si el initiator acabó, es mi turno si tengo cosas
-            pass
+            self.send_pending_messages(contact_id, addr[0], addr[1], lambda: self.protocol.enviar_pending_done(addr[0], addr[1]))
+            self._pending_sent[(addr[0], addr[1])] = True
         
         elif text == "SESSION_RESTORED_INIT":
-            # Soy initiator reconectado, envío primero
             self.db.set_contact_connected(contact_id, True)
-            pending = self.db.get_pending_messages(contact_id)
-            
-            if pending:
-                # Hay mensajes pendientes, enviarlos
-                self.protocol.enviar_pending_send(addr[0], addr[1])
-                asyncio.create_task(self.send_pending_messages(contact_id, addr[0], addr[1], 
-                                         lambda: self.protocol.enviar_pending_done(addr[0], addr[1])))
-            else:
-                # No hay mensajes pendientes, enviar DONE directamente para que el peer sepa que puede enviar
-                self.protocol.enviar_pending_send(addr[0], addr[1])
-                self.protocol.enviar_pending_done(addr[0], addr[1])
+            self.protocol.enviar_pending_send(addr[0], addr[1])
+            self.send_pending_messages(contact_id, addr[0], addr[1], lambda: self.protocol.enviar_pending_done(addr[0], addr[1]))
+            self._pending_sent[(addr[0], addr[1])] = True
         
         elif text == "SESSION_RESTORED_RESP":
-             # Soy responder reconectado, espero a que el initiator envíe
-             self.db.set_contact_connected(contact_id, True)
-             # Simular Enter para forzar el establecimiento completo de la conexión
-             if self.current_cn == contact_id:
-                 asyncio.create_task(self.handle_enter())
+            self.db.set_contact_connected(contact_id, True)
+            self._pending_sent[(addr[0], addr[1])] = False
         
         elif text == "PEER_SENDING_PENDING":
-            # Peer avisa que va a enviar. Simplemente mantenemos UI actualizada.
             pass
         
         elif text == "SEND_MY_PENDING":
-            # El peer ha terminado (Done). Ahora enviamos NOSOTROS.
-            pending = self.db.get_pending_messages(contact_id)
-            
-            if pending:
-                # Hay mensajes pendientes, enviarlos con un delay inicial
-                async def send_with_delay():
-                    await asyncio.sleep(0.5)  # Delay para asegurar que la sesión está lista
-                    self.protocol.enviar_pending_send(addr[0], addr[1])
-                    await self.send_pending_messages(contact_id, addr[0], addr[1], 
-                                             lambda: self.protocol.enviar_pending_done(addr[0], addr[1]))
-                
-                asyncio.create_task(send_with_delay())
-            else:
-                # No hay mensajes pendientes, solo confirmar con DONE
+            if not self._pending_sent.get((addr[0], addr[1]), False):
+                self._pending_sent[(addr[0], addr[1])] = True
                 self.protocol.enviar_pending_send(addr[0], addr[1])
-                self.protocol.enviar_pending_done(addr[0], addr[1])
+                self.send_pending_messages(contact_id, addr[0], addr[1], lambda: self.protocol.enviar_pending_done(addr[0], addr[1]))
         
         elif text == "RECONNECT_TIMEOUT":
             self.db.set_contact_connected(contact_id, False)
@@ -606,67 +563,46 @@ class ChatGUI:
             self.db.mark_message_status(contact_id, ack_msg_id, "delivered")
         
         else:
-            # Mensaje de texto normal
+            self.db.set_contact_connected(contact_id, True)
             received_msg_id = self.db.add_message(contact_id, real_cn, text, "received", ts, msg_id=msg_id)
             if self.current_cn == contact_id:
                 self.db.mark_message_as_read_by_id(contact_id, received_msg_id)
         
         self.refresh_ui()
 
-    async def send_pending_messages(self, cn, ip, port, callback=None):
-        """Envía mensajes con reintentos automáticos y espera a ACKs"""
+    def send_pending_messages(self, cn, ip, port, callback=None):
+        """Envía todos los mensajes pendientes"""
         pending = self.db.get_pending_messages(cn)
         if not pending or cn in self.sending_pending:
             if callback:
                 callback()
             return
         
-        # Intentamos enviar aunque el protocolo diga que no hay sesión,
-        # porque acabamos de recibir un paquete que reactivó la conexión visualmente.
-        # Si falla el envío, no pasa nada, se reintenta.
+        if not self.protocol.tiene_sesion(ip, port):
+            return
         
         self.sending_pending.add(cn)
         
-        # Pequeño delay para asegurar que la sesión está lista
-        await asyncio.sleep(0.3)
+        async def send_all_async():
+            for msg in pending:
+                success = self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
+                if success:
+                    self.db.mark_message_status(cn, msg['id'], "sent")
+                    await asyncio.sleep(0.15)
+                else:
+                    await asyncio.sleep(0.2)
+                    success = self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
+                    if success:
+                        self.db.mark_message_status(cn, msg['id'], "sent")
+                    else:
+                        break
+            
+            self.sending_pending.discard(cn)
+            self.refresh_ui()
+            if callback:
+                callback()
         
-        target_ids = [m['id'] for m in pending]
-        timeout_total = 15.0
-        start_time = asyncio.get_event_loop().time()
-        
-        while True:
-            all_delivered = True
-            current_status = {m['id']: m.get('status') for m in self.db.get_history(cn)}
-            
-            to_retry = []
-            for mid in target_ids:
-                if current_status.get(mid) != 'delivered':
-                    all_delivered = False
-                    original_msg = next((m for m in pending if m['id'] == mid), None)
-                    if original_msg:
-                        to_retry.append(original_msg)
-            
-            if all_delivered:
-                break
-            
-            if asyncio.get_event_loop().time() - start_time > timeout_total:
-                break
-            
-            # Enviar / Reenviar
-            for msg in to_retry:
-                self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
-                if current_status.get(msg['id']) == 'pending':
-                     self.db.mark_message_status(cn, msg['id'], "sent")
-                await asyncio.sleep(0.15)
-            
-            # Esperar ACKs
-            await asyncio.sleep(1.5)
-
-        self.sending_pending.discard(cn)
-        self.refresh_ui()
-        
-        if callback:
-            callback()
+        asyncio.create_task(send_all_async())
 
     async def handle_enter(self):
         if self.current_cn in ["__MI_CUENTA__", "__AYUDA__"]:
@@ -772,12 +708,9 @@ class ChatGUI:
                     continue
                 
                 info = self.db.get_contact_info(cn)
-                # Solo marcamos timeout si realmente no estamos recibiendo nada hace mucho
-                # En este caso relajamos la política para no parpadear "Desconectado"
                 if info and info.get("is_connected"):
-                    has_timeout = self.db.check_message_timeouts(cn, timeout_seconds=10) # 10s más tolerante
+                    has_timeout = self.db.check_message_timeouts(cn, timeout_seconds=10)
                     if has_timeout:
-                        # Opcional: podrías decidir NO desconectar visualmente, solo reintentar
                         self.db.set_contact_connected(cn, False)
                         ip = info.get("ip")
                         port = info.get("port")
