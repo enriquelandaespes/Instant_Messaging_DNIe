@@ -577,6 +577,10 @@ class ChatGUI:
             pending = self.db.get_pending_messages(contact_id)
             
             if pending:
+                # Simular Enter para forzar la conexión antes de enviar
+                if self.current_cn == contact_id:
+                    asyncio.create_task(self.handle_enter())
+                
                 # Hay mensajes pendientes, enviarlos
                 self.protocol.enviar_pending_send(addr[0], addr[1])
                 asyncio.create_task(self.send_pending_messages(contact_id, addr[0], addr[1], 
