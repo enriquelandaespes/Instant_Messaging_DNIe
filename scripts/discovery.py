@@ -7,6 +7,7 @@ from zeroconf.asyncio import AsyncZeroconf, AsyncServiceBrowser, AsyncServiceInf
 import config
 
 class DiscoveryService:
+    # Clase para descubrimiento de contactos
     def __init__(self, my_port, my_nick, on_peer_found_callback):
         self.port = my_port # Puerto que utilizamos 
         self.nick = my_nick # Nickname que utilizamos(Será el del DNIe)
@@ -32,7 +33,6 @@ class DiscoveryService:
 
     async def start(self):
         print(f"🌐 [mDNS] Iniciando discovery en IP: {self.my_ip}")
-        
         # Usamos AsyncZeroconf sin forzar interfaz específica para evitar errores en Windows
         try:
             self.azc = AsyncZeroconf()
@@ -85,7 +85,7 @@ class DiscoveryService:
                 # Filtro: No añadirnos a nosotros mismos
                 if ip == self.my_ip and port == self.port: return
 
-                # Avisar a la GUI
+                # Avisar a la TUI para mostrarlo
                 self.on_peer(peer_nick, ip, port)
         except Exception: 
             pass

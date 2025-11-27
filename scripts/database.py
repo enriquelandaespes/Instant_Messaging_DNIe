@@ -13,7 +13,7 @@ class JsonDatabase:
         self.dnie_manager = dnie_manager
         self.data = {"contacts": {}}
         
-        # Calcular nombre de archivo basado en el hash del número de serie
+        # Calcular nombre de archivo basado en el hash del número de serie para que sea unico por DNIe
         serial = self.dnie_manager.get_serial_number()
         serial_hash = hashlib.sha256(str(serial).encode()).hexdigest()[:16]
         
@@ -32,7 +32,7 @@ class JsonDatabase:
         self.load()
     
     def inicializar_C(self):
-        """Crea C de 64 bits si no existe"""
+        # Crea el challenge C si no existe
         if os.path.exists(self.archivo_C):
             return
         C = os.urandom(8)  # 64 bits (8 bytes)
@@ -40,7 +40,7 @@ class JsonDatabase:
             f.write(C)
     
     def leer_C(self) -> bytes:
-        """Lee C del archivo"""
+        # Lee C siempre que no haya sido modificado el archivo
         with open(self.archivo_C, "rb") as f:
             data = f.read()
         if len(data) != 8:
@@ -48,7 +48,7 @@ class JsonDatabase:
         return data
     
     def inicializar_kdb(self):
-        """Crea K_db cifrada con K (derivada de firma de C)"""
+        # Crea la Kdb
         if os.path.exists(self.archivo_kdb):
             return
         
@@ -60,7 +60,7 @@ class JsonDatabase:
         S = self.dnie_manager.sign_data(C)
         K = hashlib.sha256(S).digest()
         
-        # Cifrar K_db con K usando AES-GCM
+        # Cifrar K_db con K usando AES-GCM (Similar a como lo haciamos en el gestor de contraseñas)
         aesgcm = AESGCM(K)
         nonce = os.urandom(12)
         ct = aesgcm.encrypt(nonce, k_db, associated_data=None)
@@ -72,14 +72,14 @@ class JsonDatabase:
         self.k_db_cache = k_db
     
     def descifrar_kdb(self) -> bytes:
-        """Descifra K_db usando firma del DNI"""
+        # Descifra la Kdb como haciamos en el gestor
         if self.k_db_cache is not None:
             return self.k_db_cache
         
         if not os.path.exists(self.archivo_kdb):
             raise RuntimeError("No existe la clave k_db cifrada para este DNI.")
         
-        # Leer nonce + ct
+        # Leemos el nonce y el texto cifrado( COmo en el gestor)
         with open(self.archivo_kdb, "rb") as f:
             contenido = f.read()
         nonce = contenido[:12]
@@ -98,7 +98,7 @@ class JsonDatabase:
         return k_db
 
     def load(self):
-        """Carga la base de datos cifrada con K_db (igual que gestor de contraseñas)"""
+        # Carga la base de datos cifrada con K_db (igual que gestor de contraseñas)
         k_db = self.descifrar_kdb()
         
         if not os.path.exists(self.filepath):
@@ -128,7 +128,7 @@ class JsonDatabase:
             self.data = {"contacts": {}}
 
     def save(self):
-        """Guarda la base de datos cifrada con K_db (igual que gestor de contraseñas)"""
+        # Guarda la base de datos cifrada con K_db (igual que gestor de contraseñas)
         try:
             k_db = self.descifrar_kdb()
             
@@ -166,6 +166,7 @@ class JsonDatabase:
         self.save()
 
     def set_contact_connected(self, cn, connected):
+        # Pone el contacto como conectado
         if cn in self.data["contacts"]:
             self.data["contacts"][cn]["is_connected"] = connected
             if not connected:
@@ -173,6 +174,7 @@ class JsonDatabase:
             self.save()
 
     def add_message(self, cn, sender, text, status="received", timestamp=None, msg_id=None):
+        # Añade los mensajes a la base de datos
         if cn not in self.data["contacts"]:
             self.add_or_update_contact(cn)
         
@@ -197,11 +199,13 @@ class JsonDatabase:
         return msg_id
 
     def get_history(self, cn):
+        # Obtiene el historial de mensajes para un contacto
         if cn not in self.data["contacts"]:
             return []
         return self.data["contacts"][cn].get("msgs", [])
 
     def mark_message_status(self, cn, msg_id, status):
+        # Ponemos el mensaje en el estatus que le corresponde 
         if cn not in self.data["contacts"]:
             return
         for msg in self.data["contacts"][cn]["msgs"]:
@@ -217,15 +221,18 @@ class JsonDatabase:
                 return
  
     def get_pending_messages(self, cn):
+        # Obtenemos mensajes pendientes
         return [m for m in self.get_history(cn) if m["status"] == "pending"]
 
     def get_unread_count(self, cn, my_nick):
+        # Obtenemos mensajes que no han sido leidos
         if cn not in self.data["contacts"]:
             return 0
         msgs = self.data["contacts"][cn]["msgs"]
         return sum(1 for m in msgs if m.get("status") == "received" and not m.get("read", False))
 
     def mark_messages_as_read(self, cn, my_nick):
+        # Marcamos los mensajes como leidos
         if cn not in self.data["contacts"]:
             return
         msgs = self.data["contacts"][cn]["msgs"]
@@ -238,6 +245,7 @@ class JsonDatabase:
             self.save()
 
     def mark_message_as_read_by_id(self, cn, msg_id):
+        # Marcamos los mensajes como leidos en función de su ip
         if cn not in self.data["contacts"]:
             return
         for msg in self.data["contacts"][cn]["msgs"]:
@@ -246,7 +254,8 @@ class JsonDatabase:
                 self.save()
                 return
 
-    def check_message_timeouts(self, cn, timeout_seconds=5):
+    def check_message_timeouts(self, cn, timeout_seconds=2):
+        # Marcamos el timeout de los mensajes
         if cn not in self.data["contacts"]:
             return False
         now = datetime.now().timestamp()
@@ -263,7 +272,7 @@ class JsonDatabase:
         return has_timeout
 
     def get_session_key(self, cn):
-        """Obtiene la session_key guardada para un contacto"""
+        # Obtiene la session_key guardada para un contacto es decir, la clave compartida
         contact = self.data["contacts"].get(cn, {})
         session_key_hex = contact.get("session_key")
         if session_key_hex:
@@ -271,10 +280,11 @@ class JsonDatabase:
         return None
 
     def get_contact_info(self, cn):
-        """Obtiene toda la info de un contacto"""
+        # Obtiene toda la info de un contacto
         return self.data["contacts"].get(cn,{})
 
     def get_peer_cert(self, cn):
+        # Obtenemos el certificado del peer
         if cn not in self.data["contacts"]:
             return None
         cert_hex = self.data["contacts"][cn].get("peer_cert")
@@ -283,6 +293,7 @@ class JsonDatabase:
         return None
 
     def clean_duplicates(self):
+        # Eliminamos duplicados(limpieza y organización de la TUI)
         contacts_to_remove = []
         contacts_by_name = {}
         for cn, info in list(self.data["contacts"].items()):

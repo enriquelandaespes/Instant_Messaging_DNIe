@@ -11,7 +11,7 @@ from cryptography.x509.oid import NameOID
 from dnie_manager import DNIeManager
 from protocol import SecureIMProtocol
 from discovery import DiscoveryService
-from gui import ChatGUI
+from tui import ChatTUI
 from database import JsonDatabase
 
 async def main():
@@ -44,14 +44,14 @@ async def main():
         sys.exit(1)
 
     def protocol_callback(addr, text, nombre, msg_id=None):
-        gui.on_protocol_msg(addr, text, nombre, msg_id)
+        tui.on_protocol_msg(addr, text, nombre, msg_id)
 
     protocol = SecureIMProtocol(dnie, db, protocol_callback)
     
     mdns_temp = DiscoveryService(port, my_nick, lambda n, i, p: None)
     my_ip = mdns_temp.get_lan_ip()
     
-    gui = ChatGUI(protocol, my_nick, db, my_ip, port)
+    tui = ChatTUI(protocol, my_nick, db, my_ip, port)
     
     transport, _ = await loop.create_datagram_endpoint(
         lambda: protocol, local_addr=('0.0.0.0', port)
@@ -63,13 +63,13 @@ async def main():
         existing = db.get_contact_info(contact_id)
         if existing and existing.get("name") == name:
             return
-        gui.add_peer(name, ip, p)
+        tui.add_peer(name, ip, p)
         
     mdns = DiscoveryService(port, my_nick, discovery_callback)
     await mdns.start()
 
     try:
-        await gui.run()
+        await tui.run()
     finally:
         await mdns.stop()
  

@@ -11,7 +11,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.styles import Style
 
-class ChatGUI:
+class ChatTUI:
     def __init__(self, protocol, my_nick, db, my_ip="0.0.0.0", my_port=0):
         self.protocol = protocol
         self.my_nick = my_nick
@@ -25,14 +25,14 @@ class ChatGUI:
         self._timeout_check_task = None
         self._reconnect_timeout_task = None
         self.sending_pending = set()
-        self._pending_sent = {}
+        self.pending_sent = {}
         
         self._last_line_count = 0
         self.scroll_offset = 0
         
         self.ascii_art = {}
         try:
-            ascii_path = os.path.join(os.path.dirname(__file__), 'ascii.json')
+            ascii_path = os.path.join(os.path.dirname(__file__), 'ascii.json') # Archivo para el ASCII
             with open(ascii_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 self.ascii_art = data.get('ascii', {})
@@ -41,14 +41,14 @@ class ChatGUI:
         
         self.w_contacts = TextArea(focusable=False, width=35)
         
-        self.chat_control = FormattedTextControl(
-            text=self._get_chat_content,
-            get_cursor_position=self._get_safe_cursor_position,
+        self.chat_control = FormattedTextControl( # Obtenemos el contenido del chat
+            text=self.get_chat_content,
+            get_cursor_position=self.get_safe_cursor_position,
             focusable=False,
             show_cursor=False
         )
         
-        self.w_chat_window = Window(
+        self.w_chat_window = Window( # Ventana
             content=self.chat_control,
             wrap_lines=True,
             always_hide_cursor=True,
@@ -62,14 +62,14 @@ class ChatGUI:
         self.w_suggestions = TextArea(focusable=False, height=1, style="fg:ansigray")
         
         def on_ascii_text_changed(_):
-            self.update_ascii_suggestions()
+            self.update_ascii_suggestions() # Para ayudar a poner el ASCII
         self.w_ascii.buffer.on_text_changed += on_ascii_text_changed
 
         self.layout = Layout(
             HSplit([
                 VSplit([
                     Frame(self.w_contacts, title="👥 Contactos"),
-                    Frame(self.w_chat_window, title=self._get_chat_title)
+                    Frame(self.w_chat_window, title=self.get_chat_title)
                 ]),
                 VSplit([
                     HSplit([
@@ -82,7 +82,7 @@ class ChatGUI:
             focused_element=self.w_input
         )
 
-        style = Style.from_dict({
+        style = Style.from_dict({ # Estilo de las diferetes elemenos de la TUI
             'chat-bg': '',
             'msg-sent': "#C3C3C3",     
             'msg-recv': '#ff8800',
@@ -126,9 +126,9 @@ class ChatGUI:
             e.app.invalidate()
 
         self.app = Application(layout=self.layout, key_bindings=kb, full_screen=True, mouse_support=True, style=style)
-        self._load_initial_contacts()
+        self.load_initial_contacts()
 
-    def _get_safe_cursor_position(self):
+    def get_safe_cursor_position(self): # Obtenemos la posición del cursor(Scrolleo)
         if self._last_line_count <= 1:
             return Point(0, 0)
         max_offset = max(0, self._last_line_count - 1)
@@ -136,7 +136,7 @@ class ChatGUI:
         target_line = max(0, self._last_line_count - 1 - actual_offset)
         return Point(x=0, y=target_line)
 
-    def _load_initial_contacts(self):
+    def load_initial_contacts(self): # Carha de contactos que ya están en la base de datos
         for cn in self.db.get_all_contacts().keys():
             if cn not in self.contact_keys: 
                 self.contact_keys.append(cn)
@@ -145,13 +145,13 @@ class ChatGUI:
             self.current_cn = "__MI_CUENTA__"
         self.refresh_ui()
 
-    def _get_chat_title(self):
+    def get_chat_title(self): # Obtenemos la parte de los chats en la tui
         if not self.current_cn: 
             return "Chat Seguro"
-        if self.current_cn == "__MI_CUENTA__":
-            return "👤 Mi Cuenta"
-        elif self.current_cn == "__AYUDA__":
+        if self.current_cn == "__AYUDA__":
             return "❓ Ayuda - Atajos de Teclado"
+        elif self.current_cn == "__MI_CUENTA__":
+            return "👤 Mi Cuenta"
         
         info = self.db.get_contact_info(self.current_cn)
         status = "🔴 DESCONECTADO"
@@ -183,21 +183,22 @@ class ChatGUI:
             display_name = f"{display_name} [:{port}]"
         return f"Chat con {display_name} [{status}]"
 
-    def _get_chat_content(self):
+    def get_chat_content(self): # Obtenemos el contenido del chat para rellenarlo en la TUI
         if not self.current_cn:
             self._last_line_count = 1
             return [("class:msg-sys", "Esperando contactos...")]
         
-        if self.current_cn == "__MI_CUENTA__":
-            return self._get_my_account_content()
-        elif self.current_cn == "__AYUDA__":
-            return self._get_help_content()
+        
+        if self.current_cn == "__AYUDA__":
+            return self.get_help_content()
+        elif self.current_cn == "__MI_CUENTA__":
+            return self.get_my_account_content()
         
         msgs = list(self.db.get_history(self.current_cn))
         formatted_lines = []
         PAD_WIDTH = 80
         current_lines = 0
-        
+        # Rellenamos los mensajes por personas y el contenido del chat
         for m in msgs:
             sender = m.get('sender')
             text = m.get('text')
@@ -272,7 +273,7 @@ class ChatGUI:
         self._last_line_count = current_lines
         return formatted_lines
     
-    def _get_my_account_content(self):
+    def get_my_account_content(self): # Contenido de la pestaña de mi cuenta
         formatted_lines = []
         formatted_lines.append(("", "\n\n"))
         formatted_lines.append(("class:msg-sys", "╔════════════════════════════════════════════════════════════════════════╗\n"))
@@ -300,7 +301,7 @@ class ChatGUI:
         self._last_line_count = len(formatted_lines)
         return formatted_lines
     
-    def _get_help_content(self):
+    def get_help_content(self): # Contenido de la pestaña de ayuda  
         formatted_lines = []
         formatted_lines.append(("", "\n\n"))
         formatted_lines.append(("class:msg-sys", "╔════════════════════════════════════════════════════════════════════════╗\n"))
@@ -333,7 +334,7 @@ class ChatGUI:
         self._last_line_count = len(formatted_lines)
         return formatted_lines
 
-    def format_timestamp(self, time_str, full_date_str=None):
+    def format_timestamp(self, time_str, full_date_str=None): # Formato del timestamp de los mensajes
         try:
             if full_date_str:
                 msg_datetime = datetime.strptime(full_date_str, "%Y-%m-%d %H:%M")
@@ -353,7 +354,7 @@ class ChatGUI:
         except:
             return time_str
 
-    def visual_len(self, text):
+    def visual_len(self, text): # Longitud visual de los mensajes
         width = 0
         for char in text:
             ea = unicodedata.east_asian_width(char)
@@ -365,7 +366,7 @@ class ChatGUI:
                 width += 1
         return width
 
-    def update_ascii_suggestions(self):
+    def update_ascii_suggestions(self): # Sugerencias de ASCII
         current_text = self.w_ascii.text.strip().lower()
         if not current_text:
             self.w_suggestions.text = ""
@@ -379,26 +380,26 @@ class ChatGUI:
         else:
             self.w_suggestions.text = "  Sin coincidencias"
 
-    def refresh_ui(self):
+    def refresh_ui(self): # Refresca la UI
         lines = []
-        special_contacts = ["__MI_CUENTA__", "__AYUDA__"]
+        special_contacts = [ "__AYUDA__", "__MI_CUENTA__"]
         
         for special in special_contacts:
-            if special == "__MI_CUENTA__":
-                icon = "👤"
-                display = "Mi Cuenta"
-            else:
+            if special == "__AYUDA__":
                 icon = "❓"
                 display = "Ayuda"
+            elif special == "__MI_CUENTA__":
+                icon = "👤"
+                display = "Mi Cuenta"
             prefix = "➞ " if self.current_cn == special else "  "
             lines.append(f"{prefix}{icon} {display}")
         
-        if self.contact_keys:
+        if self.contact_keys: # Visual
             lines.append("")
             lines.append("─" * 32)
             lines.append("")
         
-        for k in self.contact_keys:
+        for k in self.contact_keys: #Información del contacto
             info = self.db.get_contact_info(k)
             if not info:
                 continue
@@ -410,7 +411,7 @@ class ChatGUI:
             else:
                 icon = "🟡"
             
-            prefix = "➞ " if k == self.current_cn else "  "
+            prefix = "➞ " if k == self.current_cn else "  " # Ponemos una flecha que indique en que pestaña estamos 
             full_name = info.get("name", k)
             name_parts = full_name.split()
             if len(name_parts) >= 2:
@@ -435,19 +436,19 @@ class ChatGUI:
         self.w_contacts.text = "\n".join(lines)
         self.app.invalidate()
 
-    def move_selection(self, delta):
-        all_items = ["__MI_CUENTA__", "__AYUDA__"] + self.contact_keys
+    def move_selection(self, delta): # Movimiento de la selección
+        all_items = ["__AYUDA__", "__MI_CUENTA__"] + self.contact_keys
         if not all_items:
             return
         idx = all_items.index(self.current_cn) if self.current_cn in all_items else 0
         new_idx = (idx + delta) % len(all_items)
         self.current_cn = all_items[new_idx]
         self.scroll_offset = 0
-        if self.current_cn not in ["__MI_CUENTA__", "__AYUDA__"]:
+        if self.current_cn not in ["__AYUDA__", "__MI_CUENTA__"] :
             self.db.mark_messages_as_read(self.current_cn, self.my_nick)
         self.refresh_ui()
 
-    def add_peer(self, name, ip, port):
+    def add_peer(self, name, ip, port): # Añade un contacto
         existing_cn = None
         all_contacts = self.db.get_all_contacts()
         
@@ -478,7 +479,7 @@ class ChatGUI:
         
         self.refresh_ui()
 
-    def on_protocol_msg(self, addr, text, real_cn, msg_id=None):
+    def on_protocol_msg(self, addr, text, real_cn, msg_id=None): # Maneja los mensajes del protocolo
         if text == "SESSIONS_READY":
             asyncio.create_task(self.auto_connect_and_send_all())
             return
@@ -526,24 +527,24 @@ class ChatGUI:
             # Siempre empieza el handshake enviando pendientes
             self.protocol.enviar_pending_send(addr[0], addr[1])
             self.send_pending_messages(contact_id, addr[0], addr[1], lambda: self.protocol.enviar_pending_done(addr[0], addr[1]))
-            self._pending_sent[(addr[0], addr[1])] = True
+            self.pending_sent[(addr[0], addr[1])] = True
         
         elif text == "SESSION_RESTORED_INIT":
             self.db.set_contact_connected(contact_id, True)
             self.protocol.enviar_pending_send(addr[0], addr[1])
             self.send_pending_messages(contact_id, addr[0], addr[1], lambda: self.protocol.enviar_pending_done(addr[0], addr[1]))
-            self._pending_sent[(addr[0], addr[1])] = True
+            self.pending_sent[(addr[0], addr[1])] = True
         
         elif text == "SESSION_RESTORED_RESP":
             self.db.set_contact_connected(contact_id, True)
-            self._pending_sent[(addr[0], addr[1])] = False
+            self.pending_sent[(addr[0], addr[1])] = False
         
         elif text == "PEER_SENDING_PENDING":
             pass
         
         elif text == "SEND_MY_PENDING":
-            if not self._pending_sent.get((addr[0], addr[1]), False):
-                self._pending_sent[(addr[0], addr[1])] = True
+            if not self.pending_sent.get((addr[0], addr[1]), False):
+                self.pending_sent[(addr[0], addr[1])] = True
                 self.protocol.enviar_pending_send(addr[0], addr[1])
                 self.send_pending_messages(contact_id, addr[0], addr[1], lambda: self.protocol.enviar_pending_done(addr[0], addr[1]))
         
@@ -556,8 +557,7 @@ class ChatGUI:
             self.db.set_contact_connected(contact_id, False)
         
         elif text == "ERROR_DESCIFRADO":
-            pass
-        
+            pass 
         elif text.startswith("ACK|"):
             ack_msg_id = text.split('|', 1)[1]
             self.db.mark_message_status(contact_id, ack_msg_id, "delivered")
@@ -571,7 +571,7 @@ class ChatGUI:
         self.refresh_ui()
 
     def send_pending_messages(self, cn, ip, port, callback=None):
-        """Envía todos los mensajes pendientes"""
+        # Envía todos los mensajes pendientes de la base de datos de un contacto
         pending = self.db.get_pending_messages(cn)
         if not pending or cn in self.sending_pending:
             if callback:
@@ -584,6 +584,7 @@ class ChatGUI:
         self.sending_pending.add(cn)
         
         async def send_all_async():
+            # Envía todos los mensajes pendientes de forma asincrona para evitar bloqueos
             for msg in pending:
                 success = self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
                 if success:
@@ -604,8 +605,8 @@ class ChatGUI:
         
         asyncio.create_task(send_all_async())
 
-    async def handle_enter(self):
-        if self.current_cn in ["__MI_CUENTA__", "__AYUDA__"]:
+    async def handle_enter(self): # Maneja lo que ocurre tras un enter 
+        if self.current_cn in ["__AYUDA__", "__MI_CUENTA__"]:
             return
         
         if self.app.layout.has_focus(self.w_ascii):
@@ -674,7 +675,7 @@ class ChatGUI:
                 self.protocol.cerrar_sesion(ip, port)
             self.refresh_ui()
 
-    def force_disconnect(self):
+    def force_disconnect(self): # Fuerza la desconexión manual de un peer(Como un bloqueo)
         if not self.current_cn:
             return
         info = self.db.get_contact_info(self.current_cn)
@@ -685,7 +686,7 @@ class ChatGUI:
             self.db.add_message(self.current_cn, "Sys", "Desconectado manualmente", "system", ts)
             self.refresh_ui()
 
-    async def auto_connect_and_send_all(self):
+    async def auto_connect_and_send_all(self):# Al conectarse maneja la lógica para avisar que se ha recoenctado
         await asyncio.sleep(0.5)
         all_contacts = list(self.db.get_all_contacts().items())
         
@@ -700,16 +701,16 @@ class ChatGUI:
         
         self.refresh_ui()
 
-    async def check_ack_timeouts(self):
+    async def check_ack_timeouts(self): # Comprueba si se han acapado los timeout de los mensajes
         while True:
-            await asyncio.sleep(2)
+            await asyncio.sleep(0.5)
             for cn in list(self.contact_keys):
                 if cn in self.sending_pending:
                     continue
                 
                 info = self.db.get_contact_info(cn)
                 if info and info.get("is_connected"):
-                    has_timeout = self.db.check_message_timeouts(cn, timeout_seconds=10)
+                    has_timeout = self.db.check_message_timeouts(cn, timeout_seconds=0.5)
                     if has_timeout:
                         self.db.set_contact_connected(cn, False)
                         ip = info.get("ip")
@@ -723,6 +724,7 @@ class ChatGUI:
                         self.refresh_ui()
 
     async def run(self):
+        # Corre la TUI
         self._timeout_check_task = asyncio.create_task(self.check_ack_timeouts())
         self._reconnect_timeout_task = asyncio.create_task(self.protocol.check_reconnect_timeouts())
         

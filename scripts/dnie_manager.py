@@ -47,6 +47,7 @@ class DNIeManager:
             return cert_der, firma
     
     def obtener_credenciales(self):
+        # Obtenemos las credenciales necesarias
         return self.cert_der, self.firma_cached
 
     def get_user_name(self):
@@ -59,12 +60,12 @@ class DNIeManager:
             return "Usuario DNIe"
 
     def get_serial_number(self):
-        """Devuelve el número de serie del certificado."""
+        # Devuelve el número de serie del certificado para el nombre de la base de datos 
         cert = x509.load_der_x509_certificate(self.cert_der, default_backend())
         return cert.serial_number
  
     def sign_data(self, data: bytes) -> bytes:
-        """Firma datos arbitrarios usando la clave privada del DNIe."""
+        # Firma datos arbitrarios usando la clave privada del DNIe
         token = self.get_token()
         with token.open(user_pin=self.pin, rw=True) as session:
             keys = list(session.get_objects({Attribute.CLASS: ObjectClass.PRIVATE_KEY}))

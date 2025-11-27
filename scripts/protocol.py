@@ -8,7 +8,7 @@ from cryptography import x509
 from cryptography.x509.oid import NameOID
 from cryptography.hazmat.backends import default_backend
 import config
-
+# Definición de los diferentes tipos de paquetes que tenemos
 PKT_HANDSHAKE_INIT = 0x01
 PKT_MSG = 0x02
 PKT_HANDSHAKE_RESP = 0x03
@@ -18,7 +18,7 @@ PKT_RECONNECT_RESP = 0x06
 PKT_PENDING_SEND = 0x07
 PKT_PENDING_DONE = 0x08
 
-class SecureIMProtocol(asyncio.DatagramProtocol):
+class SecureIMProtocol(asyncio.DatagramProtocol): # Clase que implementa el protolo de paso de mensajes seguro
     def __init__(self, dnie_manager, db, on_msg_callback):
         self.dnie = dnie_manager
         self.db = db
@@ -31,12 +31,12 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         self.role = {}
         self.pending_sent = {}
 
-    def connection_made(self, transport):
+    def connection_made(self, transport): # Al establecer la conexión
         self.transport = transport
         if self.callback:
             self.callback(None, "SESSIONS_READY", "System", None)
 
-    def datagram_received(self, data, addr):
+    def datagram_received(self, data, addr): # Al recibir un paquete
         if len(data) < 5:
             return
         msg_type = data[0]
@@ -61,12 +61,15 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         elif msg_type == PKT_PENDING_DONE:
             self.handle_pending_done(payload, addr)
 
-    def touch_session(self, addr):
-        """Actualiza el timestamp para evitar timeout mientras hablamos"""
+    def touch_session(self, addr): # Actualiza el timestamp para evitar timeout mientras hablamos
         if addr in self.reconnect_pending:
             self.reconnect_pending[addr]['timestamp'] = asyncio.get_event_loop().time()
 
-    async def handle_handshake(self, payload, addr, is_response):
+    def jls_extract_def(self):
+        # u
+        return 
+
+    async def handle_handshake(self, payload, addr, is_response): # Lo que ocurre en el handshake
         if addr in self.sessions:
             return
         
@@ -85,21 +88,21 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             offset += cert_len
             
             try:
-                cert_obj = x509.load_der_x509_certificate(cert_bytes, default_backend())
-                cn_attrs = cert_obj.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+                cert_obj = x509.load_der_x509_certificate(cert_bytes, default_backend()) # Carga del certificado
+                cn_attrs = cert_obj.subject.get_attributes_for_oid(NameOID.COMMON_NAME) # Obtención de información del dni
                 if cn_attrs:
                     raw = cn_attrs[0].value
-                    nombre = raw.replace("(AUTENTICACIÓN)", "").replace("(Autenticación)", "").replace("(FIRMA)", "").replace("(Firma)", "").strip()
+                    nombre = raw.replace("(AUTENTICACIÓN)", "").replace("(Autenticación)", "").replace("(FIRMA)", "").replace("(Firma)", "").strip() # Nos quedamos con el nombre limpio
                 else:
                     nombre = "DNIe Desconocido"
             except:
                 nombre = "Error Certificado"
             
-            peer_key_obj = x25519.X25519PublicKey.from_public_bytes(peer_pub_bytes)
-            shared_secret = self.dnie.private_key.exchange(peer_key_obj)
-            session_key = hashlib.blake2s(shared_secret, digest_size=32).digest()
+            peer_key_obj = x25519.X25519PublicKey.from_public_bytes(peer_pub_bytes) # Obtención de la clave pública del otro usuario
+            shared_secret = self.dnie.private_key.exchange(peer_key_obj) # Secreto compartido  que solo conocen kis dos usuarios, con mi clave privada y la del otro usuario
+            session_key = hashlib.blake2s(shared_secret, digest_size=32).digest() # Generación de la clave de sesión
             
-            self.sessions[addr] = {
+            self.sessions[addr] = { # Guardamos la sesión
                 'cipher': ChaCha20Poly1305(session_key),
                 'name': nombre,
                 'state': 'ESTABLISHED'
@@ -122,23 +125,23 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 peer_cert=cert_bytes.hex()
             )
             
-            if is_response:
+            if is_response: # Si somos los que iniciamos el handshake
                 self.role[addr] = "initiator"
                 cb_msg = "HANDSHAKE_OK_INIT"
             else:
-                self.role[addr] = "responder"
+                self.role[addr] = "responder" # Si respondemos al handshake
                 cb_msg = "HANDSHAKE_OK_RESP"
             
             if self.callback:
                 self.callback(addr, cb_msg, nombre, None)
             
             if not is_response:
-                self.enviar_paquete_credenciales(addr[0], addr[1], tipo=PKT_HANDSHAKE_RESP)
+                self.enviar_paquete_credenciales(addr[0], addr[1], tipo=PKT_HANDSHAKE_RESP) # Enviamos el paquete con lo necesaio para la sesión
                 
         except Exception:
             pass
 
-    def handle_message(self, payload, addr):
+    def handle_message(self, payload, addr): # Manejamos el mensaje que nos llega 
         if addr not in self.sessions:
             return
         session = self.sessions[addr]
@@ -164,7 +167,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         except:
             pass
 
-    def enviar_handshake(self, ip, port, cn=None):
+    def enviar_handshake(self, ip, port, cn=None): # Enviamos el handshake 
         addr = (ip, port)
 
         if addr in self.sessions:
@@ -191,7 +194,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                         contact_name = info.get("name", name)
                         break
         
-        if saved_key:
+        if saved_key: 
             try:
                 if isinstance(saved_key, str):
                     session_key = bytes.fromhex(saved_key)
@@ -219,7 +222,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         self.enviar_paquete_credenciales(ip, port, tipo=PKT_HANDSHAKE_INIT)
         return False
 
-    def cerrar_sesion(self, ip, port):
+    def cerrar_sesion(self, ip, port): # Cerramos sesión
         addr = (ip, port)
         if addr in self.sessions:
             del self.sessions[addr]
@@ -230,11 +233,11 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         if addr in self.pending_sent:
             del self.pending_sent[addr]
 
-    def tiene_sesion(self, ip, port):
+    def tiene_sesion(self, ip, port): # Comprobamos que haya sesión 
         addr = (ip, port)
         return addr in self.sessions
 
-    def enviar_paquete_credenciales(self, ip, port, tipo):
+    def enviar_paquete_credenciales(self, ip, port, tipo): # Mandamos el paquete con las credenciales
         if not self.transport:
             return
         try:
@@ -247,7 +250,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         except Exception:
             pass
 
-    def enviar_mensaje(self, ip, port, texto, msg_id=None):
+    def enviar_mensaje(self, ip, port, texto, msg_id=None): # Encio del mensaje
         addr = (ip, port)
         if addr not in self.sessions:
             return False
@@ -255,14 +258,14 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             cipher = self.sessions[addr]['cipher']
             nonce = os.urandom(12)
             msg_data = f"{msg_id}|{texto}" if msg_id else texto
-            ciphertext = cipher.encrypt(nonce, msg_data.encode('utf-8'), None)
+            ciphertext = cipher.encrypt(nonce, msg_data.encode('utf-8'), None) # Encriptamos con la clave compartida
             packet = struct.pack("B", PKT_MSG) + self.my_cid + nonce + ciphertext
             self.transport.sendto(packet, addr)
             return True
         except:
             return False
 
-    def enviar_ack(self, ip, port, msg_id):
+    def enviar_ack(self, ip, port, msg_id): # Mandamos ACK cifrado 
         addr = (ip, port)
         if addr not in self.sessions:
             return
@@ -275,7 +278,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         except:
             pass
 
-    def handle_ack(self, payload, addr):
+    def handle_ack(self, payload, addr): # Manejamos los ack que recibimos
         if addr not in self.sessions:
             return
         session = self.sessions[addr]
@@ -291,20 +294,20 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         except:
             pass
 
-    def enviar_reconnect_req(self, ip, port):
+    def enviar_reconnect_req(self, ip, port): # Enviamos el paquete de tipo reconnect request
         if not self.transport:
             return
         packet = struct.pack("B", PKT_RECONNECT_REQ) + self.my_cid
         self.transport.sendto(packet, (ip, port))
 
-    def enviar_reconnect_resp(self, ip, port):
+    def enviar_reconnect_resp(self, ip, port): # Enviamos el paqeute de tipo reconnct response
         if not self.transport:
             return
         packet = struct.pack("B", PKT_RECONNECT_RESP) + self.my_cid
         self.transport.sendto(packet, (ip, port))
 
     async def handle_reconnect_req(self, payload, addr):
-        """Recibe REQ: si tengo session_key guardada, restauro y respondo"""
+        # Recibe REQ: si tengo session_key guardada, restauro y respondo si no da error(Evitamos man in the middle)
         all_contacts = self.db.get_all_contacts()
         for cn, info in all_contacts.items():
             if info.get("ip") == addr[0] and info.get("port") == addr[1] and info.get("session_key"):
@@ -325,7 +328,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                     pass
 
     async def handle_reconnect_resp(self, payload, addr):
-        """Recibe RESP a mi REQ: confirmo que soy initiator"""
+        # Recibe RESP a mi REQ: confirmo que soy initiator
         if addr in self.reconnect_pending:
             info = self.reconnect_pending.pop(addr)
             cn = info['cn']
@@ -337,7 +340,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                     self.callback(addr, "SESSION_RESTORED_INIT", session.get("name", "Unknown"), None)
 
     def enviar_pending_send(self, ip, port):
-        """Avisa que voy a enviar pendientes"""
+        # Avisa que voy a enviar pendientes
         if not self.transport:
             return
         try:
@@ -347,7 +350,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             pass
 
     def enviar_pending_done(self, ip, port):
-        """Avisa que terminé de enviar pendientes"""
+        # Avisa que terminé de enviar pendientes
         if not self.transport:
             return
         try:
@@ -357,7 +360,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             pass
 
     async def handle_pending_send(self, payload, addr):
-        """Recibe PENDING_SEND: el peer va a mandar sus pendientes"""
+        # Recibe PENDING_SEND: el peer va a mandar sus pendientes
         if addr not in self.sessions:
             return
         session = self.sessions[addr]
@@ -366,7 +369,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             self.callback(addr, "PEER_SENDING_PENDING", nombre, None)
 
     def handle_pending_done(self, payload, addr):
-        """Recibe PENDING_DONE: el peer terminó de mandar sus pendientes"""
+        # Recibe PENDING_DONE: el peer terminó de mandar sus pendientes
         if addr not in self.sessions:
             return
         session = self.sessions[addr]
@@ -378,14 +381,15 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 self.callback(addr, "SEND_MY_PENDING", nombre, None)
 
     async def check_reconnect_timeouts(self):
+        # Comprueba los timeouts de los reconnets
         while True:
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.5)
             
             current_time = asyncio.get_event_loop().time()
             timeout_addrs = []
             
             for addr, info in list(self.reconnect_pending.items()):
-                if current_time - info['timestamp'] > 5:
+                if current_time - info['timestamp'] > 0.5:
                     timeout_addrs.append(addr)
             
             for addr in timeout_addrs:
