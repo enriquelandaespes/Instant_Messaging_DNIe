@@ -548,13 +548,22 @@ class ChatGUI:
         
         elif text == "SESSION_RESTORED_INIT":
             # Soy initiator reconectado, envío primero
-            self.protocol.enviar_pending_send(addr[0], addr[1])
-            self.send_pending_messages(contact_id, addr[0], addr[1], 
-                                     lambda: self.protocol.enviar_pending_done(addr[0], addr[1]))
+            self.db.set_contact_connected(contact_id, True)
+            pending = self.db.get_pending_messages(contact_id)
+            
+            if pending:
+                # Hay mensajes pendientes, enviarlos
+                self.protocol.enviar_pending_send(addr[0], addr[1])
+                self.send_pending_messages(contact_id, addr[0], addr[1], 
+                                         lambda: self.protocol.enviar_pending_done(addr[0], addr[1]))
+            else:
+                # No hay mensajes pendientes, enviar DONE directamente para que el peer sepa que puede enviar
+                self.protocol.enviar_pending_send(addr[0], addr[1])
+                self.protocol.enviar_pending_done(addr[0], addr[1])
         
         elif text == "SESSION_RESTORED_RESP":
-             # Soy responder reconectado, espero
-             pass
+             # Soy responder reconectado, espero a que el initiator envíe
+             self.db.set_contact_connected(contact_id, True)
         
         elif text == "PEER_SENDING_PENDING":
             # Peer avisa que va a enviar. Simplemente mantenemos UI actualizada.
@@ -562,10 +571,17 @@ class ChatGUI:
         
         elif text == "SEND_MY_PENDING":
             # El peer ha terminado (Done). Ahora enviamos NOSOTROS.
-            # Sin condiciones raras, si llega DONE, enviamos.
-            self.protocol.enviar_pending_send(addr[0], addr[1])
-            self.send_pending_messages(contact_id, addr[0], addr[1], 
-                                     lambda: self.protocol.enviar_pending_done(addr[0], addr[1]))
+            pending = self.db.get_pending_messages(contact_id)
+            
+            if pending:
+                # Hay mensajes pendientes, enviarlos
+                self.protocol.enviar_pending_send(addr[0], addr[1])
+                self.send_pending_messages(contact_id, addr[0], addr[1], 
+                                         lambda: self.protocol.enviar_pending_done(addr[0], addr[1]))
+            else:
+                # No hay mensajes pendientes, solo confirmar con DONE
+                self.protocol.enviar_pending_send(addr[0], addr[1])
+                self.protocol.enviar_pending_done(addr[0], addr[1])
         
         elif text == "RECONNECT_TIMEOUT":
             self.db.set_contact_connected(contact_id, False)
