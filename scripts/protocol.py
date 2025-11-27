@@ -29,6 +29,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         self.handshake_in_progress = {}
         self.reconnect_pending = {}
         self.role = {}
+        self.pending_sent = {}
 
     def connection_made(self, transport):
         self.transport = transport
@@ -231,6 +232,8 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             del self.reconnect_pending[addr]
         if addr in self.role:
             del self.role[addr]
+        if addr in self.pending_sent:
+            del self.pending_sent[addr]
 
     def tiene_sesion(self, ip, port):
         addr = (ip, port)
@@ -374,9 +377,12 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         session = self.sessions[addr]
         nombre = session.get('name', 'Unknown')
         
-        # Siempre devolvemos este callback para que el GUI decida si le toca enviar
-        if self.callback:
-            self.callback(addr, "SEND_MY_PENDING", nombre, None)
+        # Solo el responder debe enviar cuando recibe DONE del initiator
+        # Y solo una vez por reconexión
+        if self.role.get(addr) == "responder" and not self.pending_sent.get(addr, False):
+            self.pending_sent[addr] = True
+            if self.callback:
+                self.callback(addr, "SEND_MY_PENDING", nombre, None)
 
     async def check_reconnect_timeouts(self):
         while True:
