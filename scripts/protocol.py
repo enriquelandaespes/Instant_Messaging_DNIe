@@ -377,9 +377,8 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         session = self.sessions[addr]
         nombre = session.get('name', 'Unknown')
         
-        # Solo el responder debe enviar cuando recibe DONE del initiator
-        # Y solo una vez por reconexión
-        if self.role.get(addr) == "responder" and not self.pending_sent.get(addr, False):
+        # Si aún no he enviado mis pendientes, es mi turno ahora
+        if not self.pending_sent.get(addr, False):
             self.pending_sent[addr] = True
             if self.callback:
                 self.callback(addr, "SEND_MY_PENDING", nombre, None)
