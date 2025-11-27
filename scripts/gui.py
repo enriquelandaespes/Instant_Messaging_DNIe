@@ -564,6 +564,9 @@ class ChatGUI:
         elif text == "SESSION_RESTORED_RESP":
              # Soy responder reconectado, espero a que el initiator envíe
              self.db.set_contact_connected(contact_id, True)
+             # Simular Enter para forzar el establecimiento completo de la conexión
+             if self.current_cn == contact_id:
+                 asyncio.create_task(self.handle_enter())
         
         elif text == "PEER_SENDING_PENDING":
             # Peer avisa que va a enviar. Simplemente mantenemos UI actualizada.
