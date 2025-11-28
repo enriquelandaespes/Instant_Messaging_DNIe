@@ -24,11 +24,13 @@ class ChatTUI:
         self.pending_handshakes = set()
         self._timeout_check_task = None
         self._reconnect_timeout_task = None
+        self._window_monitor_task = None
         self.sending_pending = set()
         self.pending_sent = {}
         
         self._last_line_count = 0
         self.scroll_offset = 0
+        self._last_window_width = 0
         
         self.ascii_art = {}
         try:
@@ -57,8 +59,8 @@ class ChatTUI:
             dont_extend_height=False
         )
         
-        self.w_ascii = TextArea(height=3, prompt="> ", multiline=False, width=35)
-        self.w_input = TextArea(height=3, prompt="> ", multiline=False)
+        self.w_ascii = TextArea(height=2, prompt="> ", multiline=True, width=35)
+        self.w_input = TextArea(height=2, prompt="> ", multiline=True)
         self.w_suggestions = TextArea(focusable=False, height=1, style="fg:ansigray")
         
         def on_ascii_text_changed(_):
@@ -142,7 +144,7 @@ class ChatTUI:
                 self.contact_keys.append(cn)
         self.contact_keys.sort()
         if self.current_cn is None:
-            self.current_cn = "__AYUDA"
+            self.current_cn = "__AYUDA__"
         self.refresh_ui()
 
     def get_chat_title(self): # Obtenemos la parte de los chats en la tui
@@ -196,8 +198,20 @@ class ChatTUI:
         
         msgs = list(self.db.get_history(self.current_cn))
         formatted_lines = []
-        PAD_WIDTH = 80
-        current_lines = 0
+        
+        # Margen superior interno
+        formatted_lines.append(("", "\n"))
+        
+        # Obtener el ancho real de la ventana de chat
+        try:
+            PAD_WIDTH = self.w_chat_window.render_info.window_width if self.w_chat_window.render_info else 80
+        except:
+            PAD_WIDTH = 80
+        
+        # Reducir el ancho efectivo para dejar márgenes laterales (2 espacios a cada lado)
+        PAD_WIDTH = max(40, PAD_WIDTH - 4)
+        
+        current_lines = 1  # Contamos la línea del margen superior
         # Rellenamos los mensajes por personas y el contenido del chat
         for m in msgs:
             sender = m.get('sender')
@@ -222,15 +236,17 @@ class ChatTUI:
             formatted_lines.append(("", "\n"))
             current_lines += 1
             
+            MARGIN = "  "  # Margen izquierdo de 2 espacios
+            
             if sender == "Sys":
                 center_pad = " " * max(0, (PAD_WIDTH - self.visual_len(text)) // 2)
-                formatted_lines.append(("class:msg-sys", f"{center_pad}--- {text} ---"))
+                formatted_lines.append(("class:msg-sys", f"{MARGIN}{center_pad}--- {text} ---"))
                 
             elif status == 'received' or sender != self.my_nick:
-                formatted_lines.append(("class:msg-recv", f"[{formatted_time}] {sender}:\n"))
+                formatted_lines.append(("class:msg-recv", f"{MARGIN}[{formatted_time}] {sender}:\n"))
                 current_lines += 1
                 for line in text.split('\n'):
-                    formatted_lines.append(("class:msg-recv", f" > {line}\n"))
+                    formatted_lines.append(("class:msg-recv", f"{MARGIN} > {line}\n"))
                     current_lines += 1
                     
             else:
@@ -242,33 +258,72 @@ class ChatTUI:
                     tick = "🕒"
                 
                 text_lines = text.split('\n')
+                
+                # Calcular el ancho del timestamp con tick
+                time_info = f"{formatted_time} {tick}"
+                time_width = self.visual_len(time_info)
+                
                 if len(text_lines) > 1:
+                    # Múltiples líneas
                     for i, line in enumerate(text_lines):
+                        line_width = self.visual_len(line)
                         if i == len(text_lines) - 1:
-                            line_content = f"{line}   {formatted_time} {tick}"
-                            padding = " " * max(0, PAD_WIDTH - self.visual_len(line_content))
-                            
-                            formatted_lines.append(("", padding))
-                            formatted_lines.append(("class:msg-sent", line))
-                            formatted_lines.append(("class:time", f"   {formatted_time} "))
-                            tick_style = "class:tick-read" if status == 'delivered' else "class:tick-sent"
-                            formatted_lines.append((tick_style, f"{tick}\n"))
-                            current_lines += 1
+                            # Última línea: verificar si cabe con el timestamp
+                            if line_width + time_width + 3 <= PAD_WIDTH:
+                                # Cabe en la misma línea
+                                padding = " " * max(0, PAD_WIDTH - line_width - time_width - 3)
+                                formatted_lines.append(("", MARGIN + padding))
+                                formatted_lines.append(("class:msg-sent", line))
+                                formatted_lines.append(("class:time", f"   {formatted_time} "))
+                                tick_style = "class:tick-read" if status == 'delivered' else "class:tick-sent"
+                                formatted_lines.append((tick_style, f"{tick}\n"))
+                                current_lines += 1
+                            else:
+                                # No cabe: línea aparte para el timestamp
+                                padding = " " * max(0, PAD_WIDTH - line_width)
+                                formatted_lines.append(("", MARGIN + padding + line + "\n"))
+                                current_lines += 1
+                                # Timestamp en nueva línea a la derecha
+                                time_padding = " " * max(0, PAD_WIDTH - time_width)
+                                formatted_lines.append(("", MARGIN + time_padding))
+                                formatted_lines.append(("class:time", f"{formatted_time} "))
+                                tick_style = "class:tick-read" if status == 'delivered' else "class:tick-sent"
+                                formatted_lines.append((tick_style, f"{tick}\n"))
+                                current_lines += 1
                         else:
-                            padding = " " * max(0, PAD_WIDTH - self.visual_len(line))
-                            formatted_lines.append(("", padding + line + "\n"))
+                            # Líneas intermedias
+                            padding = " " * max(0, PAD_WIDTH - line_width)
+                            formatted_lines.append(("", MARGIN + padding + line + "\n"))
                             current_lines += 1
                 else:
-                    line_content = f"{text}   {formatted_time} {tick}"
-                    padding = " " * max(0, PAD_WIDTH - self.visual_len(line_content))
-                    
-                    formatted_lines.append(("", padding))
-                    formatted_lines.append(("class:msg-sent", text))
-                    formatted_lines.append(("class:time", f"   {formatted_time} "))
-                    
-                    tick_style = "class:tick-read" if status == 'delivered' else "class:tick-sent"
-                    formatted_lines.append((tick_style, f"{tick}\n"))
-                    current_lines += 1
+                    # Una sola línea
+                    text_width = self.visual_len(text)
+                    if text_width + time_width + 3 <= PAD_WIDTH:
+                        # Cabe todo en una línea
+                        padding = " " * max(0, PAD_WIDTH - text_width - time_width - 3)
+                        formatted_lines.append(("", MARGIN + padding))
+                        formatted_lines.append(("class:msg-sent", text))
+                        formatted_lines.append(("class:time", f"   {formatted_time} "))
+                        tick_style = "class:tick-read" if status == 'delivered' else "class:tick-sent"
+                        formatted_lines.append((tick_style, f"{tick}\n"))
+                        current_lines += 1
+                    else:
+                        # Mensaje muy largo: timestamp en línea separada
+                        padding = " " * max(0, PAD_WIDTH - text_width)
+                        formatted_lines.append(("", MARGIN + padding))
+                        formatted_lines.append(("class:msg-sent", text + "\n"))
+                        current_lines += 1
+                        # Timestamp en nueva línea a la derecha
+                        time_padding = " " * max(0, PAD_WIDTH - time_width)
+                        formatted_lines.append(("", MARGIN + time_padding))
+                        formatted_lines.append(("class:time", f"{formatted_time} "))
+                        tick_style = "class:tick-read" if status == 'delivered' else "class:tick-sent"
+                        formatted_lines.append((tick_style, f"{tick}\n"))
+                        current_lines += 1
+        
+        # Margen inferior interno
+        formatted_lines.append(("", "\n"))
+        current_lines += 1
         
         self._last_line_count = current_lines
         return formatted_lines
@@ -701,6 +756,20 @@ class ChatTUI:
         
         self.refresh_ui()
 
+    async def monitor_window_size(self):
+        """Monitorea cambios en el tamaño de la ventana y fuerza redibujado"""
+        while True:
+            await asyncio.sleep(0.1)  # Verificar cada 100ms
+            try:
+                if self.w_chat_window.render_info:
+                    current_width = self.w_chat_window.render_info.window_width
+                    if current_width != self._last_window_width and current_width > 0:
+                        self._last_window_width = current_width
+                        if self.app:
+                            self.app.invalidate()
+            except:
+                pass
+
     async def check_ack_timeouts(self): # Comprueba si se han acapado los timeout de los mensajes
         while True:
             await asyncio.sleep(0.5)
@@ -727,6 +796,7 @@ class ChatTUI:
         # Corre la TUI
         self._timeout_check_task = asyncio.create_task(self.check_ack_timeouts())
         self._reconnect_timeout_task = asyncio.create_task(self.protocol.check_reconnect_timeouts())
+        self._window_monitor_task = asyncio.create_task(self.monitor_window_size())
         
         try:
             await self.app.run_async()
@@ -741,5 +811,11 @@ class ChatTUI:
                 self._reconnect_timeout_task.cancel()
                 try:
                     await self._reconnect_timeout_task
+                except asyncio.CancelledError:
+                    pass
+            if self._window_monitor_task:
+                self._window_monitor_task.cancel()
+                try:
+                    await self._window_monitor_task
                 except asyncio.CancelledError:
                     pass

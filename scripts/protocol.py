@@ -65,10 +65,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol): # Clase que implementa el prot
         if addr in self.reconnect_pending:
             self.reconnect_pending[addr]['timestamp'] = asyncio.get_event_loop().time()
 
-    def jls_extract_def(self):
-        # u
-        return 
-
     async def handle_handshake(self, payload, addr, is_response): # Lo que ocurre en el handshake
         if addr in self.sessions:
             return
@@ -383,13 +379,13 @@ class SecureIMProtocol(asyncio.DatagramProtocol): # Clase que implementa el prot
     async def check_reconnect_timeouts(self):
         # Comprueba los timeouts de los reconnets
         while True:
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1)
             
             current_time = asyncio.get_event_loop().time()
             timeout_addrs = []
             
             for addr, info in list(self.reconnect_pending.items()):
-                if current_time - info['timestamp'] > 0.5:
+                if current_time - info['timestamp'] > 3:
                     timeout_addrs.append(addr)
             
             for addr in timeout_addrs:
