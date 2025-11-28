@@ -142,7 +142,7 @@ class ChatTUI:
                 self.contact_keys.append(cn)
         self.contact_keys.sort()
         if self.current_cn is None:
-            self.current_cn = "__MI_CUENTA__"
+            self.current_cn = "__AYUDA"
         self.refresh_ui()
 
     def get_chat_title(self): # Obtenemos la parte de los chats en la tui
