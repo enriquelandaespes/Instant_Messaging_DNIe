@@ -25,6 +25,7 @@ class ChatTUI:
         self._timeout_check_task = None
         self._reconnect_timeout_task = None
         self._window_monitor_task = None
+        self._ui_refresh_task = None  # Nueva tarea para forzar redibujado
         self.sending_pending = set()
         self.pending_sent = {}
         
@@ -769,6 +770,16 @@ class ChatTUI:
                             self.app.invalidate()
             except:
                 pass
+    
+    async def force_ui_refresh(self):
+        """Fuerza redibujado de la UI constantemente para evitar bloqueos"""
+        while True:
+            await asyncio.sleep(0.05)  # Cada 50ms
+            try:
+                if self.app:
+                    self.app.invalidate()
+            except:
+                pass
 
     async def check_ack_timeouts(self): # Comprueba si se han acapado los timeout de los mensajes
         while True:
@@ -797,6 +808,7 @@ class ChatTUI:
         self._timeout_check_task = asyncio.create_task(self.check_ack_timeouts())
         self._reconnect_timeout_task = asyncio.create_task(self.protocol.check_reconnect_timeouts())
         self._window_monitor_task = asyncio.create_task(self.monitor_window_size())
+        self._ui_refresh_task = asyncio.create_task(self.force_ui_refresh())  # Nueva tarea
         
         try:
             await self.app.run_async()
@@ -817,5 +829,11 @@ class ChatTUI:
                 self._window_monitor_task.cancel()
                 try:
                     await self._window_monitor_task
+                except asyncio.CancelledError:
+                    pass
+            if self._ui_refresh_task:
+                self._ui_refresh_task.cancel()
+                try:
+                    await self._ui_refresh_task
                 except asyncio.CancelledError:
                     pass
