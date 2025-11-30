@@ -15,11 +15,24 @@ from tui import ChatTUI
 from database import JsonDatabase
 
 async def main():
+    # Parsear argumentos: python main.py [IP] [PUERTO]
+    manual_ip = None
     port = config.UDP_PORT
-    if len(sys.argv) > 1 and sys.argv[1].isdigit():
-        port = int(sys.argv[1])
     
-    print(f"--- DNIe CHAT (Puerto {port}) ---")
+    if len(sys.argv) > 1:
+        # Si hay un argumento y es una IP (contiene puntos)
+        if '.' in sys.argv[1]:
+            manual_ip = sys.argv[1]
+            if len(sys.argv) > 2 and sys.argv[2].isdigit():
+                port = int(sys.argv[2])
+        # Si es solo un número, es el puerto
+        elif sys.argv[1].isdigit():
+            port = int(sys.argv[1])
+    
+    if manual_ip:
+        print(f"--- DNIe CHAT (IP: {manual_ip}, Puerto {port}) ---")
+    else:
+        print(f"--- DNIe CHAT (Puerto {port}) ---")
     
     loop = asyncio.get_running_loop()
     dnie = None
@@ -48,8 +61,12 @@ async def main():
 
     protocol = SecureIMProtocol(dnie, db, protocol_callback)
     
-    mdns_temp = DiscoveryService(port, my_nick, lambda n, i, p: None)
-    my_ip = mdns_temp.get_lan_ip()
+    # Usar IP manual si se especificó, sino autodetectar
+    if manual_ip:
+        my_ip = manual_ip
+    else:
+        mdns_temp = DiscoveryService(port, my_nick, lambda n, i, p: None)
+        my_ip = mdns_temp.get_lan_ip()
     
     tui = ChatTUI(protocol, my_nick, db, my_ip, port)
     
@@ -65,7 +82,7 @@ async def main():
             return
         tui.add_peer(name, ip, p)
         
-    mdns = DiscoveryService(port, my_nick, discovery_callback)
+    mdns = DiscoveryService(port, my_nick, discovery_callback, my_ip=my_ip if manual_ip else None)
     await mdns.start()
 
     try:

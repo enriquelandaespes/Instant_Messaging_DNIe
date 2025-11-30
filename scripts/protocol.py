@@ -142,7 +142,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol): # Clase que implementa el prot
                 cert_obj = x509.load_der_x509_certificate(cert_bytes, default_backend()) # Carga del certificado
                 cn_attrs = cert_obj.subject.get_attributes_for_oid(NameOID.COMMON_NAME) # Obtención de información del dni
                 if cn_attrs:
-                    raw = cn_attrs[0].value
+                    raw = str(cn_attrs[0].value)
                     nombre = raw.replace("(AUTENTICACIÓN)", "").replace("(Autenticación)", "").replace("(FIRMA)", "").replace("(Firma)", "").strip() # Nos quedamos con el nombre limpio
                 else:
                     nombre = "DNIe Desconocido"

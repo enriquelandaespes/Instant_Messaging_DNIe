@@ -8,13 +8,14 @@ import config
 
 class DiscoveryService:
     # Clase para descubrimiento de contactos
-    def __init__(self, my_port, my_nick, on_peer_found_callback):
+    def __init__(self, my_port, my_nick, on_peer_found_callback, my_ip=None):
         self.port = my_port # Puerto que utilizamos 
         self.nick = my_nick # Nickname que utilizamos(Será el del DNIe)
         self.on_peer = on_peer_found_callback # Callback para cuando encontramos un peer
         self.azc = None # AsyncZeroconf
         self.browser = None # AsyncServiceBrowser
-        self.my_ip = self.get_lan_ip() # Ip que tenemos
+        # Usar IP manual si se proporciona, sino autodetectar
+        self.my_ip = my_ip if my_ip else self.get_lan_ip()
          
         # ID único para evitar choques si reinicias rápido el programa
         self.unique_id = str(uuid.uuid4())[:8]
@@ -79,7 +80,10 @@ class DiscoveryService:
                 # Intentar extraer nick de las propiedades
                 peer_nick = name.split(".")[0]
                 if info.properties and b'nick' in info.properties:
-                    try: peer_nick = info.properties[b'nick'].decode('utf-8')
+                    try:
+                        nick_val = info.properties[b'nick']
+                        if nick_val:
+                            peer_nick = nick_val.decode('utf-8')
                     except: pass
 
                 # Filtro: No añadirnos a nosotros mismos
