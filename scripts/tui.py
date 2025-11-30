@@ -655,9 +655,6 @@ class ChatTUI:
                     # Delay mayor para asegurar que el SO procese el paquete y evitar saturación
                     # Windows puede descartar paquetes si enviamos muy rápido
                     await asyncio.sleep(0.5)
-                    self.refresh_ui()
-                    if self.app:
-                        self.app.invalidate()
             
             self.sending_pending.discard(cn)
             self.refresh_ui()
