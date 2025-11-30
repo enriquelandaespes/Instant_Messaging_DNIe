@@ -685,6 +685,30 @@ class ChatTUI:
         
         self.refresh_ui()
 
+    async def monitor_window_size(self):
+        """Monitorea cambios en el tamaño de la ventana y fuerza redibujado"""
+        while True:
+            await asyncio.sleep(0.1)  # Verificar cada 100ms
+            try:
+                if self.w_chat_window.render_info:
+                    current_width = self.w_chat_window.render_info.window_width
+                    if current_width != self._last_window_width and current_width > 0:
+                        self._last_window_width = current_width
+                        if self.app:
+                            self.app.invalidate()
+            except:
+                pass
+    
+    async def force_ui_refresh(self):
+        """Fuerza redibujado de la UI constantemente para evitar bloqueos"""
+        while True:
+            await asyncio.sleep(0.05)  # Cada 50ms
+            try:
+                if self.app:
+                    self.app.invalidate()
+            except:
+                pass
+
     async def check_ack_timeouts(self): # Comprueba si se han acapado los timeout de los mensajes
         while True:
             await asyncio.sleep(0.5)
