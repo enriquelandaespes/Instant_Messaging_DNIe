@@ -79,10 +79,10 @@ class SecureIMProtocol(asyncio.DatagramProtocol): # Clase que implementa el prot
             peer_ephemeral_pub_bytes = payload[:32]
             
             # Determinar si soy el iniciador o el responder
-            is_responder = addr not in self.ephemeral_keys
+            is_initiator = addr in self.ephemeral_keys
             
-            # Generar mi clave efímera si no existe
-            if addr not in self.ephemeral_keys:
+            # Generar mi clave efímera si no existe (soy el responder)
+            if not is_initiator:
                 my_ephemeral_private = x25519.X25519PrivateKey.generate()
                 self.ephemeral_keys[addr] = {
                     'private': my_ephemeral_private,
@@ -101,10 +101,13 @@ class SecureIMProtocol(asyncio.DatagramProtocol): # Clase que implementa el prot
             self.ephemeral_keys[addr]['temp_cipher'] = ChaCha20Poly1305(temp_key)
             self.ephemeral_keys[addr]['peer_public'] = peer_ephemeral_pub_bytes
             
-            # Si soy el responder, también programo el envío de mi certificado
-            # pero espero más tiempo para recibir primero el del iniciador
-            if is_responder:
-                asyncio.create_task(self._enviar_certificado_diferido(addr[0], addr[1], PKT_HANDSHAKE_RESP, delay_ms=300))
+            # Enviar certificado cifrado INMEDIATAMENTE
+            if is_initiator:
+                # Soy el iniciador: envío HANDSHAKE_INIT
+                self.enviar_paquete_credenciales(addr[0], addr[1], tipo=PKT_HANDSHAKE_INIT)
+            else:
+                # Soy el responder: envío HANDSHAKE_RESP
+                self.enviar_paquete_credenciales(addr[0], addr[1], tipo=PKT_HANDSHAKE_RESP)
             
         except Exception:
             pass
@@ -297,34 +300,9 @@ class SecureIMProtocol(asyncio.DatagramProtocol): # Clase que implementa el prot
             # Enviar solo la clave pública efímera
             packet = struct.pack("B", PKT_EPHEMERAL_KEY) + self.my_cid + public_bytes
             self.transport.sendto(packet, (ip, port))
-            
-            # Programar envío del certificado cifrado después de un breve delay
-            # para dar tiempo a que llegue la respuesta con la clave efímera del peer
-            asyncio.create_task(self._enviar_certificado_diferido(ip, port, PKT_HANDSHAKE_INIT))
+            # El certificado se enviará automáticamente cuando reciba la clave efímera del peer
         except Exception:
             pass
-    
-    async def _enviar_certificado_diferido(self, ip, port, tipo, delay_ms=100):
-        """Espera a tener la clave efímera del peer y luego envía el certificado cifrado"""
-        addr = (ip, port)
-        max_wait_iterations = 20  # máximo 2 segundos
-        delay_iterations = int(delay_ms / 100)  # convertir delay_ms a iteraciones
-        
-        # Esperar el delay inicial si se especificó
-        for _ in range(delay_iterations):
-            await asyncio.sleep(0.1)
-            if addr not in self.ephemeral_keys:
-                return  # Se canceló el handshake
-        
-        # Espera hasta 2 segundos a que llegue la clave efímera del peer
-        for _ in range(max_wait_iterations):
-            await asyncio.sleep(0.1)
-            if addr in self.ephemeral_keys and 'temp_cipher' in self.ephemeral_keys[addr]:
-                self.enviar_paquete_credenciales(ip, port, tipo=tipo)
-                return
-        # Timeout: no se recibió la clave efímera, limpiar
-        if addr in self.ephemeral_keys:
-            del self.ephemeral_keys[addr]
 
     def cerrar_sesion(self, ip, port): # Cerramos sesión
         addr = (ip, port)
