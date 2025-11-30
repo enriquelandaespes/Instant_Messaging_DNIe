@@ -1,11 +1,5 @@
 # 💬 Instant Messaging DNIe — Mensajería P2P con Autenticación Hardware
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Python](https://img.shields.io/badge/python-3.8+-green.svg)
-![Status](https://img.shields.io/badge/status-stable-brightgreen.svg)
-![Security](https://img.shields.io/badge/security-DNIe%20%2B%20Noise%20IK-red.svg)
-
----
 
 ## 🎯 ¿Qué es esto?
 
@@ -15,14 +9,12 @@
 
 - **Autenticación hardware**: Tu identidad vive en el chip del DNIe, nunca sale de ahí
 - **Zero-knowledge**: No hay servidores que almacenen tus mensajes o contactos
-- **Cifrado militar**: Noise Protocol Framework (mismo núcleo que WireGuard)
 - **Descubrimiento automático**: Encuentra usuarios en tu red local sin configuración
 - **Base de datos cifrada**: Incluso si roban tu ordenador, sin el DNIe no hay acceso
 - **Reconexión inteligente**: Se restauran sesiones automáticamente tras desconexiones
 
 ### ⚡ Tecnologías implementadas
 
-- **Noise IK**: Handshake criptográfico con forward secrecy
 - **X25519**: Intercambio de claves con curva elíptica
 - **ChaCha20-Poly1305**: Cifrado autenticado de mensajes
 - **BLAKE2s**: Función hash rápida y segura
@@ -71,7 +63,7 @@
 └───────┬──────────────┘
         │
 ┌───────▼─────────────────────────────────────────────────────┐
-│  protocol.py (Noise IK + CID + ChaCha20-Poly1305)           │
+│  protocol.py           │
 │  UDP 443: Handshake, Mensajes, ACK, Reconexión             │
 └───────┬─────────────────────────────────────────────────────┘
         │
@@ -371,8 +363,7 @@ Para asegurar compatibilidad con otros equipos:
 
 1. **Puerto**: Todos deben usar UDP **443** (valor por defecto)
 2. **mDNS**: Servicio `_dni-im._udp.local.`
-3. **Noise IK**: Implementación estándar con librería oficial
-4. **Formato de paquetes**: Según especificación del protocolo
+3. **Formato de paquetes**: Según especificación del protocolo
 
 ### Checklist pre-Connectathon
 
@@ -439,8 +430,6 @@ La estructura de la base de datos:
 
 ## 📚 Referencias técnicas
 
-- [Noise Protocol Framework](https://noiseprotocol.org/noise.html)
-- [Noise IK Pattern](https://noiseprotocol.org/noise.html#interactive-patterns)
 - [OpenSC PKCS#11](https://github.com/OpenSC/OpenSC/wiki)
 - [Python Zeroconf](https://github.com/jstasiak/python-zeroconf)
 - [prompt_toolkit Documentation](https://python-prompt-toolkit.readthedocs.io/)
