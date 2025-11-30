@@ -640,26 +640,17 @@ class ChatTUI:
         self.sending_pending.add(cn)
         
         async def send_all_async():
-            # Envía todos los mensajes pendientes de forma asincrona para evitar bloqueos
-            for idx, msg in enumerate(pending):
-                # Verificar que seguimos teniendo sesión
-                if not self.protocol.tiene_sesion(ip, port):
-                    break
+            # Envía mensajes uno a uno con delay
+            for msg in pending:
+                # Enviar mensaje
+                self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
+                self.db.mark_message_status(cn, msg['id'], "sent")
                 
-                # Intentar enviar hasta 5 veces con más tiempo
-                sent = False
-                for attempt in range(5):
-                    if self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id']):
-                        self.db.mark_message_status(cn, msg['id'], "sent")
-                        sent = True
-                        break
-                    await asyncio.sleep(0.2)
+                # Delay para dar tiempo al loop y a la red
+                await asyncio.sleep(0.2)
                 
-                if sent:
-                    # Delay reducido
-                    await asyncio.sleep(0.1)
-                else:
-                    await asyncio.sleep(0.1)
+                # Refrescar UI
+                self.refresh_ui()
             
             self.sending_pending.discard(cn)
             self.refresh_ui()
@@ -668,179 +659,49 @@ class ChatTUI:
         
         asyncio.create_task(send_all_async())
 
-    async def handle_enter(self): # Maneja lo que ocurre tras un enter 
-        if self.current_cn in ["__AYUDA__", "__MI_CUENTA__"]:
-            return
+    async def _keep_loop_awake(self):
+        """
+        TRUCO CRÍTICO PARA WINDOWS:
+        Envía paquetes UDP a un puerto local aleatorio constantemente.
+        Esto genera eventos de I/O reales que OBLIGAN al Event Loop a despertarse
+        y procesar otras tareas (como enviar mensajes o actualizar UI),
+        evitando que se quede dormido esperando input de consola (Enter).
+        """
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(('127.0.0.1', 0))
+        addr = sock.getsockname()
+        sock.setblocking(False)
         
-        if self.app.layout.has_focus(self.w_ascii):
-            ascii_key = self.w_ascii.text.strip()
-            self.w_ascii.text = ""
-            if ascii_key in self.ascii_art:
-                ascii_text = self.ascii_art[ascii_key]
-                if not self.current_cn:
-                    return
-                info = self.db.get_contact_info(self.current_cn)
-                if not info:
-                    return
-                ip, port = info.get("ip"), info.get("port")
-                ts = datetime.now().strftime("%H:%M")
-                
-                if not ip or not self.protocol.tiene_sesion(ip, port):
-                    self.db.add_message(self.current_cn, self.my_nick, ascii_text, "pending", ts)
-                    if ip and port:
-                        self.protocol.enviar_handshake(ip, port, cn=self.current_cn)
-                    self.refresh_ui()
-                    return
-                
-                msg_id = self.db.add_message(self.current_cn, self.my_nick, ascii_text, "sent", ts)
-                if not self.protocol.enviar_mensaje(ip, port, ascii_text, msg_id):
-                    self.db.mark_message_status(self.current_cn, msg_id, "pending")
-                    self.db.set_contact_connected(self.current_cn, False)
-                    self.protocol.cerrar_sesion(ip, port)
-                self.refresh_ui()
-            return
-        
-        text = self.w_input.text.strip()
-        if not self.current_cn:
-            self.w_input.text = ""
-            return
-        info = self.db.get_contact_info(self.current_cn)
-        if not info:
-            return
-        ip, port = info.get("ip"), info.get("port")
-        ts = datetime.now().strftime("%H:%M")
-        
-        if not ip:
-            if text:
-                self.db.add_message(self.current_cn, "Sys", "Usuario Offline - Sin IP", "error", ts)
-            self.w_input.text = ""
-            self.refresh_ui()
-            return
-        
-        if not self.protocol.tiene_sesion(ip, port):
-            if text:
-                self.db.add_message(self.current_cn, self.my_nick, text, "pending", ts)
-                self.scroll_offset = 0
-                self.w_input.text = ""
-            if self.current_cn not in self.pending_handshakes:
-                self.protocol.enviar_handshake(ip, port, cn=self.current_cn)
-                self.pending_handshakes.add(self.current_cn)
-                self.refresh_ui()
-            return
-        
-        if text:
-            msg_id = self.db.add_message(self.current_cn, self.my_nick, text, "sent", ts)
-            self.scroll_offset = 0
-            self.w_input.text = ""
-            if not self.protocol.enviar_mensaje(ip, port, text, msg_id):
-                self.db.mark_message_status(self.current_cn, msg_id, "pending")
-                self.db.set_contact_connected(self.current_cn, False)
-                self.protocol.cerrar_sesion(ip, port)
-            self.refresh_ui()
-
-    def force_disconnect(self): # Fuerza la desconexión manual de un peer(Como un bloqueo)
-        if not self.current_cn:
-            return
-        info = self.db.get_contact_info(self.current_cn)
-        if info and info.get("ip"):
-            self.protocol.cerrar_sesion(info["ip"], info["port"])
-            self.db.set_contact_connected(self.current_cn, False)
-            ts = datetime.now().strftime("%H:%M")
-            self.db.add_message(self.current_cn, "Sys", "Desconectado manualmente", "system", ts)
-            self.refresh_ui()
-
-    async def auto_connect_and_send_all(self):# Al conectarse maneja la lógica para avisar que se ha recoenctado
-        await asyncio.sleep(0.5)
-        all_contacts = list(self.db.get_all_contacts().items())
-        
-        for cn, info in all_contacts:
-            ip = info.get("ip")
-            port = info.get("port")
-            if not ip or not port:
-                continue
-            
-            self.protocol.enviar_handshake(ip, port, cn=cn)
+        while True:
             await asyncio.sleep(0.1)
-        
-        self.refresh_ui()
-
-    async def monitor_window_size(self):
-        """Monitorea cambios en el tamaño de la ventana y fuerza redibujado"""
-        while True:
-            await asyncio.sleep(0.1)  # Verificar cada 100ms
             try:
-                if self.w_chat_window.render_info:
-                    current_width = self.w_chat_window.render_info.window_width
-                    if current_width != self._last_window_width and current_width > 0:
-                        self._last_window_width = current_width
-                        if self.app:
-                            self.app.invalidate()
+                sock.sendto(b'wake', addr)
+                # Leer para vaciar buffer, aunque no hagamos nada con ello
+                try:
+                    sock.recv(1024)
+                except BlockingIOError:
+                    pass
             except:
                 pass
-    
-    async def force_ui_refresh(self):
-        """Fuerza redibujado de la UI constantemente para evitar bloqueos"""
-        while True:
-            await asyncio.sleep(0.05)  # Cada 50ms
-            try:
-                if self.app:
-                    self.app.invalidate()
-            except:
-                pass
-
-    async def check_ack_timeouts(self): # Comprueba si se han acapado los timeout de los mensajes
-        while True:
-            await asyncio.sleep(0.5)
-            for cn in list(self.contact_keys):
-                if cn in self.sending_pending:
-                    continue
-                
-                info = self.db.get_contact_info(cn)
-                if info and info.get("is_connected"):
-                    has_timeout = self.db.check_message_timeouts(cn, timeout_seconds=0.5)
-                    if has_timeout:
-                        self.db.set_contact_connected(cn, False)
-                        ip = info.get("ip")
-                        port = info.get("port")
-                        if ip and port:
-                            self.protocol.cerrar_sesion(ip, port)
-                        msgs = self.db.get_history(cn)
-                        for msg in msgs:
-                            if msg.get("status") == "sent":
-                                self.db.mark_message_status(cn, msg["id"], "pending")
-                        self.refresh_ui()
 
     async def run(self):
         # Corre la TUI
         self._timeout_check_task = asyncio.create_task(self.check_ack_timeouts())
         self._reconnect_timeout_task = asyncio.create_task(self.protocol.check_reconnect_timeouts())
         self._window_monitor_task = asyncio.create_task(self.monitor_window_size())
-        self._ui_refresh_task = asyncio.create_task(self.force_ui_refresh())  # Nueva tarea
+        self._ui_refresh_task = asyncio.create_task(self.force_ui_refresh())
+        self._wakeup_task = asyncio.create_task(self._keep_loop_awake()) # Tarea de despertador
         
         try:
             await self.app.run_async()
         finally:
-            if self._timeout_check_task:
-                self._timeout_check_task.cancel()
-                try:
-                    await self._timeout_check_task
-                except asyncio.CancelledError:
-                    pass
-            if self._reconnect_timeout_task:
-                self._reconnect_timeout_task.cancel()
-                try:
-                    await self._reconnect_timeout_task
-                except asyncio.CancelledError:
-                    pass
-            if self._window_monitor_task:
-                self._window_monitor_task.cancel()
-                try:
-                    await self._window_monitor_task
-                except asyncio.CancelledError:
-                    pass
-            if self._ui_refresh_task:
-                self._ui_refresh_task.cancel()
-                try:
-                    await self._ui_refresh_task
-                except asyncio.CancelledError:
-                    pass
+            # Cancelar todas las tareas
+            for task in [self._timeout_check_task, self._reconnect_timeout_task, 
+                         self._window_monitor_task, self._ui_refresh_task, self._wakeup_task]:
+                if task:
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
