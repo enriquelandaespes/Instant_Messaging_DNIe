@@ -9,15 +9,17 @@ from cryptography.x509.oid import NameOID
 from cryptography.hazmat.backends import default_backend
 import config
 # Definición de los diferentes tipos de paquetes que tenemos
-PKT_EPHEMERAL_KEY = 0x01      # Nueva fase 1: solo clave pública efímera
-PKT_HANDSHAKE_INIT = 0x02      # Fase 2: certificado cifrado (init)
-PKT_MSG = 0x03
-PKT_HANDSHAKE_RESP = 0x04      # Fase 2: certificado cifrado (resp)
-PKT_ACK = 0x05
-PKT_RECONNECT_REQ = 0x06
-PKT_RECONNECT_RESP = 0x07
-PKT_PENDING_SEND = 0x08
-PKT_PENDING_DONE = 0x09
+# IMPORTANTE: PKT_MSG y siguientes mantienen sus valores originales para compatibilidad
+PKT_EPHEMERAL_KEY = 0x01      # Nueva fase 1: solo clave pública efímera (nuevo)
+PKT_MSG = 0x02                 # MANTIENE valor original
+PKT_ACK = 0x04                 # MANTIENE valor original
+PKT_RECONNECT_REQ = 0x05       # MANTIENE valor original
+PKT_RECONNECT_RESP = 0x06      # MANTIENE valor original
+PKT_PENDING_SEND = 0x07        # MANTIENE valor original
+PKT_PENDING_DONE = 0x08        # MANTIENE valor original
+# Nuevos paquetes para handshake cifrado
+PKT_HANDSHAKE_INIT = 0x10      # Fase 2: certificado cifrado (init)
+PKT_HANDSHAKE_RESP = 0x11      # Fase 2: certificado cifrado (resp)
 
 class SecureIMProtocol(asyncio.DatagramProtocol): # Clase que implementa el protolo de paso de mensajes seguro
     def __init__(self, dnie_manager, db, on_msg_callback):
