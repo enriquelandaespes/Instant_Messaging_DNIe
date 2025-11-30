@@ -641,22 +641,29 @@ class ChatTUI:
         
         async def send_all_async():
             # Envía todos los mensajes pendientes de forma asincrona para evitar bloqueos
-            for msg in pending:
-                # Intentar enviar hasta 3 veces
+            for idx, msg in enumerate(pending):
+                # Verificar que seguimos teniendo sesión
+                if not self.protocol.tiene_sesion(ip, port):
+                    break
+                
+                # Intentar enviar hasta 5 veces con más tiempo
                 sent = False
-                for _ in range(3):
+                for attempt in range(5):
                     if self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id']):
                         self.db.mark_message_status(cn, msg['id'], "sent")
                         sent = True
                         break
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(0.2)
                 
                 if sent:
                     # Forzar refresh de UI después de cada mensaje (simula Enter)
                     self.refresh_ui()
-                    # Delay mayor para asegurar que el SO procese el paquete y evitar saturación
-                    # Windows puede descartar paquetes si enviamos muy rápido
-                    await asyncio.sleep(0.5)
+                    # Delay más largo para evitar saturación del buffer de red
+                    # Especialmente importante en Windows que tiene buffers pequeños
+                    await asyncio.sleep(0.8)
+                else:
+                    # Si no se pudo enviar después de 5 intentos, pausar más
+                    await asyncio.sleep(1.0)
             
             self.sending_pending.discard(cn)
             self.refresh_ui()
