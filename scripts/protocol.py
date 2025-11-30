@@ -50,7 +50,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol): # Clase que implementa el prot
         self.touch_session(addr)
         
         if msg_type == PKT_EPHEMERAL_KEY:
-            self.handle_ephemeral_key(payload, addr)
+            asyncio.create_task(self.handle_ephemeral_key(payload, addr))
         elif msg_type == PKT_HANDSHAKE_INIT:
             asyncio.create_task(self.handle_handshake(payload, addr, is_response=False))
         elif msg_type == PKT_HANDSHAKE_RESP:
@@ -72,7 +72,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol): # Clase que implementa el prot
         if addr in self.reconnect_pending:
             self.reconnect_pending[addr]['timestamp'] = asyncio.get_event_loop().time()
 
-    def handle_ephemeral_key(self, payload, addr):
+    async def handle_ephemeral_key(self, payload, addr):
         """Fase 1: Recibe la clave pública efímera del peer"""
         try:
             if len(payload) < 32:
