@@ -71,5 +71,5 @@ class DNIeManager:
             keys = list(session.get_objects({Attribute.CLASS: ObjectClass.PRIVATE_KEY}))
             if not keys:
                 raise RuntimeError("No clave privada.")
-            priv_key = keys[0]
+            priv_key = keys[1]
             return priv_key.sign(data, mechanism=Mechanism.SHA256_RSA_PKCS)
