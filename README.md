@@ -16,7 +16,7 @@ A desktop/laptop instant messaging application that provides:
 - **🌐 mDNS Discovery**: Automatic peer discovery on local network via `_dni-im._udp.local`
 - **💬 Text UI (TUI)**: Multi-chat management interface using Textual
 - **📇 Contact Book**: Friendly names pinned to certificate fingerprints (TOFU)
-- **🔌 Single UDP Port**: All traffic (handshake + data) over UDP/6666 or configurable port
+- **🔌 Single UDP Port**: All traffic (handshake + data) over UDP/443 or configurable port
 - **🔄 Connection Multiplexing**: CID (Connection ID) based session demultiplexing
 - **📬 Message Queueing**: Offline message delivery when peers reconnect
 - **🔐 Session Persistence**: Store session keys to avoid re-handshake on reconnection
@@ -354,7 +354,7 @@ python main.py --debug               # Enable debug logging
 **Via Manual Entry:**
 1. Press Ctrl+N
 2. Enter peer IP (e.g., `192.168.1.100`)
-3. Enter peer port (default: 6666)
+3. Enter peer port (default: 443)
 4. Wait for handshake
 5. Verify certificate
 6. Chat!
@@ -527,12 +527,12 @@ python -m pytest ../tests/ -v
 **Test 1: Basic Handshake**
 ```bash
 # Terminal 1
-python main.py --port 6666 &
+python main.py --port 443 &
 
 # Terminal 2
-python main.py --port 6667
+python main.py --port 444
 
-# In app: Connect to localhost:6666
+# In app: Connect to localhost:443
 # Verify handshake completes without errors
 ```
 
@@ -567,7 +567,7 @@ python -c "from scripts.dnie_manager import DNIeManager; m = DNIeManager(); cert
 
 ```python
 # Check if both peers have correct IP:port
-netstat -anu | grep 6666
+netstat -anu | grep 443
 
 # Enable debug logging
 python main.py --debug
