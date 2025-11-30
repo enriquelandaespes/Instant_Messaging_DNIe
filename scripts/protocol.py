@@ -78,6 +78,9 @@ class SecureIMProtocol(asyncio.DatagramProtocol): # Clase que implementa el prot
             
             peer_ephemeral_pub_bytes = payload[:32]
             
+            # Determinar si soy el iniciador o el responder
+            is_responder = addr not in self.ephemeral_keys
+            
             # Generar mi clave efímera si no existe
             if addr not in self.ephemeral_keys:
                 my_ephemeral_private = x25519.X25519PrivateKey.generate()
@@ -97,6 +100,11 @@ class SecureIMProtocol(asyncio.DatagramProtocol): # Clase que implementa el prot
             # Crear cifrador temporal para el certificado
             self.ephemeral_keys[addr]['temp_cipher'] = ChaCha20Poly1305(temp_key)
             self.ephemeral_keys[addr]['peer_public'] = peer_ephemeral_pub_bytes
+            
+            # Si soy el responder, también programo el envío de mi certificado
+            # pero espero más tiempo para recibir primero el del iniciador
+            if is_responder:
+                asyncio.create_task(self._enviar_certificado_diferido(addr[0], addr[1], PKT_HANDSHAKE_RESP, delay_ms=300))
             
         except Exception:
             pass
@@ -133,10 +141,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol): # Clase que implementa el prot
                 if addr in self.ephemeral_keys:
                     del self.ephemeral_keys[addr]
                 return
-            
-            # Limpiar clave efímera usada
-            if addr in self.ephemeral_keys:
-                del self.ephemeral_keys[addr]
             
             try:
                 cert_obj = x509.load_der_x509_certificate(cert_bytes, default_backend()) # Carga del certificado
@@ -186,8 +190,9 @@ class SecureIMProtocol(asyncio.DatagramProtocol): # Clase que implementa el prot
             if self.callback:
                 self.callback(addr, cb_msg, nombre, None)
             
-            if not is_response:
-                self.enviar_paquete_credenciales(addr[0], addr[1], tipo=PKT_HANDSHAKE_RESP) # Enviamos el paquete con lo necesaio para la sesión
+            # Limpiar clave efímera después de todo
+            if addr in self.ephemeral_keys:
+                del self.ephemeral_keys[addr]
                 
         except Exception:
             pass
@@ -299,11 +304,20 @@ class SecureIMProtocol(asyncio.DatagramProtocol): # Clase que implementa el prot
         except Exception:
             pass
     
-    async def _enviar_certificado_diferido(self, ip, port, tipo):
+    async def _enviar_certificado_diferido(self, ip, port, tipo, delay_ms=100):
         """Espera a tener la clave efímera del peer y luego envía el certificado cifrado"""
         addr = (ip, port)
+        max_wait_iterations = 20  # máximo 2 segundos
+        delay_iterations = int(delay_ms / 100)  # convertir delay_ms a iteraciones
+        
+        # Esperar el delay inicial si se especificó
+        for _ in range(delay_iterations):
+            await asyncio.sleep(0.1)
+            if addr not in self.ephemeral_keys:
+                return  # Se canceló el handshake
+        
         # Espera hasta 2 segundos a que llegue la clave efímera del peer
-        for _ in range(20):
+        for _ in range(max_wait_iterations):
             await asyncio.sleep(0.1)
             if addr in self.ephemeral_keys and 'temp_cipher' in self.ephemeral_keys[addr]:
                 self.enviar_paquete_credenciales(ip, port, tipo=tipo)
