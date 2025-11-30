@@ -642,17 +642,21 @@ class ChatTUI:
         async def send_all_async():
             # Envía todos los mensajes pendientes de forma asincrona para evitar bloqueos
             for msg in pending:
-                success = self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
-                if success:
-                    self.db.mark_message_status(cn, msg['id'], "sent")
-                    await asyncio.sleep(0.15)
-                else:
-                    await asyncio.sleep(0.2)
-                    success = self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
-                    if success:
+                # Intentar enviar hasta 3 veces
+                sent = False
+                for _ in range(3):
+                    if self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id']):
                         self.db.mark_message_status(cn, msg['id'], "sent")
-                    else:
+                        sent = True
                         break
+                    await asyncio.sleep(0.1)
+                
+                if sent:
+                    # Pequeño delay para no saturar buffer UDP
+                    await asyncio.sleep(0.1)
+                    self.refresh_ui()
+                    if self.app:
+                        self.app.invalidate()
             
             self.sending_pending.discard(cn)
             self.refresh_ui()
