@@ -656,14 +656,10 @@ class ChatTUI:
                     await asyncio.sleep(0.2)
                 
                 if sent:
-                    # Forzar refresh de UI después de cada mensaje (simula Enter)
-                    self.refresh_ui()
-                    # Delay más largo para evitar saturación del buffer de red
-                    # Especialmente importante en Windows que tiene buffers pequeños
-                    await asyncio.sleep(0.8)
+                    # Delay reducido
+                    await asyncio.sleep(0.1)
                 else:
-                    # Si no se pudo enviar después de 5 intentos, pausar más
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(0.1)
             
             self.sending_pending.discard(cn)
             self.refresh_ui()

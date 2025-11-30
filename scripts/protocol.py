@@ -216,6 +216,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol): # Clase que implementa el prot
             
             if '|' in msg_data:
                 msg_id, msg = msg_data.split('|', 1)
+                self.enviar_ack(addr[0], addr[1], msg_id)
             else:
                 msg_id = None
                 msg = msg_data
