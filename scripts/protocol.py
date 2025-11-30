@@ -9,14 +9,15 @@ from cryptography.x509.oid import NameOID
 from cryptography.hazmat.backends import default_backend
 import config
 # Definición de los diferentes tipos de paquetes que tenemos
-PKT_HANDSHAKE_INIT = 0x01
-PKT_MSG = 0x02
-PKT_HANDSHAKE_RESP = 0x03
-PKT_ACK = 0x04
-PKT_RECONNECT_REQ = 0x05
-PKT_RECONNECT_RESP = 0x06
-PKT_PENDING_SEND = 0x07
-PKT_PENDING_DONE = 0x08
+PKT_EPHEMERAL_KEY = 0x01      # Nueva fase 1: solo clave pública efímera
+PKT_HANDSHAKE_INIT = 0x02      # Fase 2: certificado cifrado (init)
+PKT_MSG = 0x03
+PKT_HANDSHAKE_RESP = 0x04      # Fase 2: certificado cifrado (resp)
+PKT_ACK = 0x05
+PKT_RECONNECT_REQ = 0x06
+PKT_RECONNECT_RESP = 0x07
+PKT_PENDING_SEND = 0x08
+PKT_PENDING_DONE = 0x09
 
 class SecureIMProtocol(asyncio.DatagramProtocol): # Clase que implementa el protolo de paso de mensajes seguro
     def __init__(self, dnie_manager, db, on_msg_callback):
@@ -30,6 +31,8 @@ class SecureIMProtocol(asyncio.DatagramProtocol): # Clase que implementa el prot
         self.reconnect_pending = {}
         self.role = {}
         self.pending_sent = {}
+        # Claves efímeras para encriptar el certificado durante el handshake
+        self.ephemeral_keys = {}  # {addr: {'private': key, 'peer_public': key, 'temp_cipher': cipher}}
 
     def connection_made(self, transport): # Al establecer la conexión
         self.transport = transport
@@ -44,7 +47,9 @@ class SecureIMProtocol(asyncio.DatagramProtocol): # Clase que implementa el prot
         
         self.touch_session(addr)
         
-        if msg_type == PKT_HANDSHAKE_INIT:
+        if msg_type == PKT_EPHEMERAL_KEY:
+            self.handle_ephemeral_key(payload, addr)
+        elif msg_type == PKT_HANDSHAKE_INIT:
             asyncio.create_task(self.handle_handshake(payload, addr, is_response=False))
         elif msg_type == PKT_HANDSHAKE_RESP:
             asyncio.create_task(self.handle_handshake(payload, addr, is_response=True))
@@ -65,23 +70,73 @@ class SecureIMProtocol(asyncio.DatagramProtocol): # Clase que implementa el prot
         if addr in self.reconnect_pending:
             self.reconnect_pending[addr]['timestamp'] = asyncio.get_event_loop().time()
 
+    def handle_ephemeral_key(self, payload, addr):
+        """Fase 1: Recibe la clave pública efímera del peer"""
+        try:
+            if len(payload) < 32:
+                return
+            
+            peer_ephemeral_pub_bytes = payload[:32]
+            
+            # Generar mi clave efímera si no existe
+            if addr not in self.ephemeral_keys:
+                my_ephemeral_private = x25519.X25519PrivateKey.generate()
+                self.ephemeral_keys[addr] = {
+                    'private': my_ephemeral_private,
+                    'public_bytes': my_ephemeral_private.public_key().public_bytes_raw()
+                }
+                # Enviar mi clave efímera de vuelta
+                packet = struct.pack("B", PKT_EPHEMERAL_KEY) + self.my_cid + self.ephemeral_keys[addr]['public_bytes']
+                self.transport.sendto(packet, addr)
+            
+            # Calcular secreto compartido efímero
+            peer_ephemeral_key = x25519.X25519PublicKey.from_public_bytes(peer_ephemeral_pub_bytes)
+            ephemeral_shared = self.ephemeral_keys[addr]['private'].exchange(peer_ephemeral_key)
+            temp_key = hashlib.blake2s(ephemeral_shared, digest_size=32).digest()
+            
+            # Crear cifrador temporal para el certificado
+            self.ephemeral_keys[addr]['temp_cipher'] = ChaCha20Poly1305(temp_key)
+            self.ephemeral_keys[addr]['peer_public'] = peer_ephemeral_pub_bytes
+            
+        except Exception:
+            pass
+    
     async def handle_handshake(self, payload, addr, is_response): # Lo que ocurre en el handshake
         if addr in self.sessions:
             return
         
+        # Verificar que tenemos clave efímera establecida
+        if addr not in self.ephemeral_keys or 'temp_cipher' not in self.ephemeral_keys[addr]:
+            return
+        
         try:
+            temp_cipher = self.ephemeral_keys[addr]['temp_cipher']
             offset = 0
-            if len(payload) < 32:
+            
+            # Extraer y descifrar el certificado cifrado
+            if len(payload) < 44:  # 32 (pub key) + 12 (nonce) mínimo
                 return
             
             peer_pub_bytes = payload[offset:offset+32]
             offset += 32
             
-            cert_len = struct.unpack("!H", payload[offset:offset+2])[0]
-            offset += 2
+            nonce = payload[offset:offset+12]
+            offset += 12
             
-            cert_bytes = payload[offset:offset+cert_len]
-            offset += cert_len
+            encrypted_cert = payload[offset:]
+            
+            # Descifrar el certificado
+            try:
+                cert_bytes = temp_cipher.decrypt(nonce, encrypted_cert, None)
+            except Exception:
+                # Error al descifrar: posible ataque o corrupción
+                if addr in self.ephemeral_keys:
+                    del self.ephemeral_keys[addr]
+                return
+            
+            # Limpiar clave efímera usada
+            if addr in self.ephemeral_keys:
+                del self.ephemeral_keys[addr]
             
             try:
                 cert_obj = x509.load_der_x509_certificate(cert_bytes, default_backend()) # Carga del certificado
@@ -95,7 +150,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol): # Clase que implementa el prot
                 nombre = "Error Certificado"
             
             peer_key_obj = x25519.X25519PublicKey.from_public_bytes(peer_pub_bytes) # Obtención de la clave pública del otro usuario
-            shared_secret = self.dnie.private_key.exchange(peer_key_obj) # Secreto compartido  que solo conocen kis dos usuarios, con mi clave privada y la del otro usuario
+            shared_secret = self.dnie.private_key.exchange(peer_key_obj) # Secreto compartido  que solo conocen los dos usuarios, con mi clave privada y la del otro usuario
             session_key = hashlib.blake2s(shared_secret, digest_size=32).digest() # Generación de la clave de sesión
             
             self.sessions[addr] = { # Guardamos la sesión
@@ -215,8 +270,47 @@ class SecureIMProtocol(asyncio.DatagramProtocol): # Clase que implementa el prot
             except Exception:
                 pass
         
-        self.enviar_paquete_credenciales(ip, port, tipo=PKT_HANDSHAKE_INIT)
+        # Fase 1: Enviar clave efímera primero
+        self.enviar_clave_efimera(ip, port)
         return False
+    
+    def enviar_clave_efimera(self, ip, port):
+        """Fase 1: Envía solo la clave pública efímera para establecer canal cifrado"""
+        if not self.transport:
+            return
+        try:
+            addr = (ip, port)
+            # Generar nueva clave efímera para este handshake
+            my_ephemeral_private = x25519.X25519PrivateKey.generate()
+            public_bytes = my_ephemeral_private.public_key().public_bytes_raw()
+            
+            self.ephemeral_keys[addr] = {
+                'private': my_ephemeral_private,
+                'public_bytes': public_bytes
+            }
+            
+            # Enviar solo la clave pública efímera
+            packet = struct.pack("B", PKT_EPHEMERAL_KEY) + self.my_cid + public_bytes
+            self.transport.sendto(packet, (ip, port))
+            
+            # Programar envío del certificado cifrado después de un breve delay
+            # para dar tiempo a que llegue la respuesta con la clave efímera del peer
+            asyncio.create_task(self._enviar_certificado_diferido(ip, port, PKT_HANDSHAKE_INIT))
+        except Exception:
+            pass
+    
+    async def _enviar_certificado_diferido(self, ip, port, tipo):
+        """Espera a tener la clave efímera del peer y luego envía el certificado cifrado"""
+        addr = (ip, port)
+        # Espera hasta 2 segundos a que llegue la clave efímera del peer
+        for _ in range(20):
+            await asyncio.sleep(0.1)
+            if addr in self.ephemeral_keys and 'temp_cipher' in self.ephemeral_keys[addr]:
+                self.enviar_paquete_credenciales(ip, port, tipo=tipo)
+                return
+        # Timeout: no se recibió la clave efímera, limpiar
+        if addr in self.ephemeral_keys:
+            del self.ephemeral_keys[addr]
 
     def cerrar_sesion(self, ip, port): # Cerramos sesión
         addr = (ip, port)
@@ -233,14 +327,27 @@ class SecureIMProtocol(asyncio.DatagramProtocol): # Clase que implementa el prot
         addr = (ip, port)
         return addr in self.sessions
 
-    def enviar_paquete_credenciales(self, ip, port, tipo): # Mandamos el paquete con las credenciales
+    def enviar_paquete_credenciales(self, ip, port, tipo): # Fase 2: Mandamos el certificado CIFRADO
         if not self.transport:
             return
+        addr = (ip, port)
+        
+        # Verificar que tenemos clave efímera establecida
+        if addr not in self.ephemeral_keys or 'temp_cipher' not in self.ephemeral_keys[addr]:
+            return
+        
         try:
             cert, firma = self.dnie.obtener_credenciales()
+            temp_cipher = self.ephemeral_keys[addr]['temp_cipher']
+            
+            # Cifrar el certificado con la clave temporal
+            nonce = os.urandom(12)
+            encrypted_cert = temp_cipher.encrypt(nonce, cert, None)
+            
+            # Paquete: tipo | cid | public_key_X25519 | nonce | certificado_cifrado
             packet = (
-                struct.pack("B", tipo) + self.my_cid + self.dnie.public_bytes +
-                struct.pack("!H", len(cert)) + cert + firma
+                struct.pack("B", tipo) + self.my_cid + 
+                self.dnie.public_bytes + nonce + encrypted_cert
             )
             self.transport.sendto(packet, (ip, port))
         except Exception:
