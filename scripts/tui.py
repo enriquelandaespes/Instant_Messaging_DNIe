@@ -659,6 +659,54 @@ class ChatTUI:
         
         asyncio.create_task(send_all_async())
 
+    def force_disconnect(self): # Fuerza la desconexión manual de un peer(Como un bloqueo)
+        if not self.current_cn:
+            return
+        info = self.db.get_contact_info(self.current_cn)
+        if info and info.get("ip"):
+            self.protocol.cerrar_sesion(info["ip"], info["port"])
+            self.db.set_contact_connected(self.current_cn, False)
+            ts = datetime.now().strftime("%H:%M")
+            self.db.add_message(self.current_cn, "Sys", "Desconectado manualmente", "system", ts)
+            self.refresh_ui()
+
+    async def auto_connect_and_send_all(self):# Al conectarse maneja la lógica para avisar que se ha recoenctado
+        await asyncio.sleep(0.5)
+        all_contacts = list(self.db.get_all_contacts().items())
+        
+        for cn, info in all_contacts:
+            ip = info.get("ip")
+            port = info.get("port")
+            if not ip or not port:
+                continue
+            
+            self.protocol.enviar_handshake(ip, port, cn=cn)
+            await asyncio.sleep(0.1)
+        
+        self.refresh_ui()
+
+    async def check_ack_timeouts(self): # Comprueba si se han acapado los timeout de los mensajes
+        while True:
+            await asyncio.sleep(0.5)
+            for cn in list(self.contact_keys):
+                if cn in self.sending_pending:
+                    continue
+                
+                info = self.db.get_contact_info(cn)
+                if info and info.get("is_connected"):
+                    has_timeout = self.db.check_message_timeouts(cn, timeout_seconds=0.5)
+                    if has_timeout:
+                        self.db.set_contact_connected(cn, False)
+                        ip = info.get("ip")
+                        port = info.get("port")
+                        if ip and port:
+                            self.protocol.cerrar_sesion(ip, port)
+                        msgs = self.db.get_history(cn)
+                        for msg in msgs:
+                            if msg.get("status") == "sent":
+                                self.db.mark_message_status(cn, msg["id"], "pending")
+                        self.refresh_ui()
+
     async def _keep_loop_awake(self):
         """
         TRUCO CRÍTICO PARA WINDOWS:
