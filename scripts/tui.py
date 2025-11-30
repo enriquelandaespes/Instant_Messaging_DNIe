@@ -652,8 +652,9 @@ class ChatTUI:
                     await asyncio.sleep(0.1)
                 
                 if sent:
-                    # Pequeño delay para no saturar buffer UDP
-                    await asyncio.sleep(0.1)
+                    # Delay mayor para asegurar que el SO procese el paquete y evitar saturación
+                    # Windows puede descartar paquetes si enviamos muy rápido
+                    await asyncio.sleep(0.5)
                     self.refresh_ui()
                     if self.app:
                         self.app.invalidate()
