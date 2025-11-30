@@ -659,6 +659,76 @@ class ChatTUI:
         
         asyncio.create_task(send_all_async())
 
+    async def handle_enter(self): # Maneja lo que ocurre tras un enter 
+        if self.current_cn in ["__AYUDA__", "__MI_CUENTA__"]:
+            return
+        
+        if self.app.layout.has_focus(self.w_ascii):
+            ascii_key = self.w_ascii.text.strip()
+            self.w_ascii.text = ""
+            if ascii_key in self.ascii_art:
+                ascii_text = self.ascii_art[ascii_key]
+                if not self.current_cn:
+                    return
+                info = self.db.get_contact_info(self.current_cn)
+                if not info:
+                    return
+                ip, port = info.get("ip"), info.get("port")
+                ts = datetime.now().strftime("%H:%M")
+                
+                if not ip or not self.protocol.tiene_sesion(ip, port):
+                    self.db.add_message(self.current_cn, self.my_nick, ascii_text, "pending", ts)
+                    if ip and port:
+                        self.protocol.enviar_handshake(ip, port, cn=self.current_cn)
+                    self.refresh_ui()
+                    return
+                
+                msg_id = self.db.add_message(self.current_cn, self.my_nick, ascii_text, "sent", ts)
+                if not self.protocol.enviar_mensaje(ip, port, ascii_text, msg_id):
+                    self.db.mark_message_status(self.current_cn, msg_id, "pending")
+                    self.db.set_contact_connected(self.current_cn, False)
+                    self.protocol.cerrar_sesion(ip, port)
+                self.refresh_ui()
+            return
+        
+        text = self.w_input.text.strip()
+        if not self.current_cn:
+            self.w_input.text = ""
+            return
+        info = self.db.get_contact_info(self.current_cn)
+        if not info:
+            return
+        ip, port = info.get("ip"), info.get("port")
+        ts = datetime.now().strftime("%H:%M")
+        
+        if not ip:
+            if text:
+                self.db.add_message(self.current_cn, "Sys", "Usuario Offline - Sin IP", "error", ts)
+            self.w_input.text = ""
+            self.refresh_ui()
+            return
+        
+        if not self.protocol.tiene_sesion(ip, port):
+            if text:
+                self.db.add_message(self.current_cn, self.my_nick, text, "pending", ts)
+                self.scroll_offset = 0
+                self.w_input.text = ""
+            if self.current_cn not in self.pending_handshakes:
+                self.protocol.enviar_handshake(ip, port, cn=self.current_cn)
+                self.pending_handshakes.add(self.current_cn)
+                self.refresh_ui()
+            return
+        
+        if text:
+            msg_id = self.db.add_message(self.current_cn, self.my_nick, text, "sent", ts)
+            self.scroll_offset = 0
+            self.w_input.text = ""
+            if not self.protocol.enviar_mensaje(ip, port, text, msg_id):
+                self.db.mark_message_status(self.current_cn, msg_id, "pending")
+                self.db.set_contact_connected(self.current_cn, False)
+                self.protocol.cerrar_sesion(ip, port)
+            self.refresh_ui()
+
     def force_disconnect(self): # Fuerza la desconexión manual de un peer(Como un bloqueo)
         if not self.current_cn:
             return
