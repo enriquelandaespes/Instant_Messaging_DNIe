@@ -759,16 +759,14 @@ class ChatTUI:
     async def monitor_window_size(self):
         """Monitorea cambios en el tamaño de la ventana y fuerza redibujado"""
         while True:
-            await asyncio.sleep(0.05)  # Verificar cada 50ms (más frecuente)
+            await asyncio.sleep(0.1)  # Verificar cada 100ms
             try:
-                # Siempre invalidar para asegurar que los mensajes se muestren
-                if self.app:
-                    self.app.invalidate()
-                    
                 if self.w_chat_window.render_info:
                     current_width = self.w_chat_window.render_info.window_width
                     if current_width != self._last_window_width and current_width > 0:
                         self._last_window_width = current_width
+                        if self.app:
+                            self.app.invalidate()
             except:
                 pass
 

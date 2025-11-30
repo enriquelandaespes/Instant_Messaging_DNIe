@@ -48,7 +48,7 @@ async def main():
         cn_attrs = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
         if cn_attrs:
             raw = cn_attrs[0].value
-            my_nick = raw.replace("(AUTENTICACIÓN)", "").replace("(Autenticación)", "").replace("(FIRMA)", "").strip()
+            my_nick = raw.replace("(AUTENTICACIÓN)", "").replace("(Autenticación)", "").replace("(FIRMA)", "").replace("(Firma)", "").strip()
         else:
             my_nick = "Usuario Desconocido"
 
@@ -92,7 +92,8 @@ async def main():
  
 if __name__ == "__main__":
     if sys.platform == 'win32':
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        # Usar ProactorEventLoop en Windows para mejor manejo de UDP
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
     
     try:
         asyncio.run(main())
