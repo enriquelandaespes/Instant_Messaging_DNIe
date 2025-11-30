@@ -652,6 +652,8 @@ class ChatTUI:
                     await asyncio.sleep(0.1)
                 
                 if sent:
+                    # Forzar refresh de UI después de cada mensaje (simula Enter)
+                    self.refresh_ui()
                     # Delay mayor para asegurar que el SO procese el paquete y evitar saturación
                     # Windows puede descartar paquetes si enviamos muy rápido
                     await asyncio.sleep(0.5)
