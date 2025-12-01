@@ -641,47 +641,35 @@ class ChatTUI: # Clase principal de la interfaz de usuario (TUI = Text User Inte
                 callback()
             return
         
-        # Verificar que hay sesión activa antes de enviar
-        if not self.protocol.tiene_sesion(ip, port):
-            return  # Sin sesión, no podemos enviar (no debería pasar)
         
-        # Añadir contacto al conjunto de "enviando pendientes" (evita re-entrada)
-        self.sending_pending.add(cn)
+        if not self.protocol.tiene_sesion(ip, port): # Verificar que hay sesión activa antes de enviar
+            return 
         
-        async def send_all_async():
-            # Función asíncrona interna que envía mensajes uno por uno
-            # El delay entre mensajes es importante para no saturar la red
+        
+        self.sending_pending.add(cn) # Añadir contacto al conjunto de "enviando pendientes" (evita re-entrada)
+        
+        async def send_all_async(): # Función asíncrona interna que envía mensajes uno por uno, el delay entre mensajes es importante para no saturar la red
             
             for msg in pending:  # Iteramos por cada mensaje pendiente
-                # Enviar mensaje por la red (cifrado con Noise IK)
-                self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
-                # Actualizar estado en BD: "pending" -> "sent" (🕒 reloj)
-                self.db.mark_message_status(cn, msg['id'], "sent")
+                self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id']) # Enviar mensaje por la red
+                self.db.mark_message_status(cn, msg['id'], "sent") # Actualizar estado en BD
+
+                await asyncio.sleep(0.2) # Delay crítico: da tiempo al event loop para procesar otros eventos. Sin esto, la UI se congelaría durante el envío masivo
                 
-                # Delay crítico: da tiempo al event loop para procesar otros eventos
-                # Sin esto, la UI se congelaría durante el envío masivo
-                await asyncio.sleep(0.2)  # 200ms entre mensajes
-                
-                # Refrescar UI para mostrar el icono de reloj 🕒
                 self.refresh_ui()
             
-            # Terminamos: quitar del conjunto de "enviando"
             self.sending_pending.discard(cn)
             self.refresh_ui()
             
-            # Ejecutar callback si existe (normalmente enviar_pending_done)
-            if callback:
+            if callback: # Ejecutar callback si existe (normalmente enviar_pending_done)
                 callback()
-        
-        # Lanzar la tarea asíncrona (no bloqueante)
-        asyncio.create_task(send_all_async())
 
-    async def handle_enter(self):  # Maneja la pulsación de Enter (envío de mensajes o ASCII)
-        # Esta función es el núcleo de la interacción del usuario: enviar texto o ASCII Art
-        # Debe manejar múltiples casos: sin sesión, sesión activa, errores de red, etc.
+        asyncio.create_task(send_all_async()) # Lanzar la tarea asíncrona (no bloqueante)
+
+    async def handle_enter(self):  # Maneja la pulsación de Enter
         
-        # Caso especial: si estamos en pestañas de ayuda o cuenta, Enter no hace nada
-        if self.current_cn in ["__AYUDA__", "__MI_CUENTA__"]:
+        
+        if self.current_cn in ["__AYUDA__", "__MI_CUENTA__"]: # Si estamos en pestañas de ayuda o cuenta, Enter no hace nada
             return
         
         # === CASO 1: ENVÍO DE ASCII ART (si el foco está en w_ascii) ===
