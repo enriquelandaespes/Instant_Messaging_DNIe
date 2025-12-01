@@ -672,7 +672,6 @@ class ChatTUI: # Clase principal de la interfaz de usuario (TUI = Text User Inte
         if self.current_cn in ["__AYUDA__", "__MI_CUENTA__"]: # Si estamos en pestañas de ayuda o cuenta, Enter no hace nada
             return
         
-        # === CASO 1: ENVÍO DE ASCII ART (si el foco está en w_ascii) ===
         if self.app.layout.has_focus(self.w_ascii):
             ascii_key = self.w_ascii.text.strip()  # Obtener clave escrita
             self.w_ascii.text = ""  # Limpiar campo inmediatamente
@@ -680,8 +679,7 @@ class ChatTUI: # Clase principal de la interfaz de usuario (TUI = Text User Inte
             if ascii_key in self.ascii_art:  # Si la clave existe en el diccionario
                 ascii_text = self.ascii_art[ascii_key]  # Obtener el dibujo ASCII
                 
-                # Validaciones básicas
-                if not self.current_cn:
+                if not self.current_cn: # Validaciones básicas
                     return
                 info = self.db.get_contact_info(self.current_cn)
                 if not info:
@@ -690,29 +688,26 @@ class ChatTUI: # Clase principal de la interfaz de usuario (TUI = Text User Inte
                 ip, port = info.get("ip"), info.get("port")
                 ts = datetime.now().strftime("%H:%M")
                 
-                # Si no hay sesión, guardar como pendiente e iniciar handshake
-                if not ip or not self.protocol.tiene_sesion(ip, port):
+                if not ip or not self.protocol.tiene_sesion(ip, port): # Si no hay sesión, guardar como pendiente e iniciar handshake
                     self.db.add_message(self.current_cn, self.my_nick, ascii_text, "pending", ts)
                     if ip and port:  # Si tenemos IP, intentar conectar
                         self.protocol.enviar_handshake(ip, port, cn=self.current_cn)
                     self.refresh_ui()
                     return
                 
-                # Si hay sesión, enviar inmediatamente
-                msg_id = self.db.add_message(self.current_cn, self.my_nick, ascii_text, "sent", ts)
+                msg_id = self.db.add_message(self.current_cn, self.my_nick, ascii_text, "sent", ts) # Si hay sesión, enviar inmediatamente
+                
                 if not self.protocol.enviar_mensaje(ip, port, ascii_text, msg_id):
-                    # Si falla el envío, marcar como pendiente y cerrar sesión
-                    self.db.mark_message_status(self.current_cn, msg_id, "pending")
+                    self.db.mark_message_status(self.current_cn, msg_id, "pending") # Si falla el envío, marcar como pendiente y cerrar sesión
                     self.db.set_contact_connected(self.current_cn, False)
                     self.protocol.cerrar_sesion(ip, port)
                 self.refresh_ui()
             return  # Terminamos aquí (caso ASCII)
         
-        # === CASO 2: ENVÍO DE MENSAJE NORMAL (si el foco está en w_input) ===
-        text = self.w_input.text.strip()  # Obtener texto escrito
+        text = self.w_input.text.strip()  # Envio de mensaje normal. Obtener texto escrito
         
-        # Validaciones
-        if not self.current_cn:  # Sin contacto seleccionado
+        
+        if not self.current_cn: # Validaciones
             self.w_input.text = ""
             return
         
@@ -723,93 +718,74 @@ class ChatTUI: # Clase principal de la interfaz de usuario (TUI = Text User Inte
         ip, port = info.get("ip"), info.get("port")
         ts = datetime.now().strftime("%H:%M")
         
-        # Si el contacto no tiene IP (offline), mostrar error
-        if not ip:
+        if not ip: # Si el contacto no tiene IP (offline), mostrar error
             if text:  # Solo si el usuario escribió algo
                 self.db.add_message(self.current_cn, "Sys", "Usuario Offline - Sin IP", "error", ts)
             self.w_input.text = ""
             self.refresh_ui()
             return
         
-        # Si no hay sesión activa, guardar mensaje como pendiente e iniciar handshake
-        if not self.protocol.tiene_sesion(ip, port):
+        if not self.protocol.tiene_sesion(ip, port): # Si no hay sesión activa, guardar mensaje como pendiente e iniciar handshake
             if text:  # Solo si hay texto (Enter vacío solo conecta sin enviar)
                 self.db.add_message(self.current_cn, self.my_nick, text, "pending", ts)
                 self.scroll_offset = 0  # Resetear scroll (mostrar mensajes recientes)
                 self.w_input.text = ""  # Limpiar campo de entrada
             
-            # Iniciar handshake si no está ya en progreso
-            if self.current_cn not in self.pending_handshakes:
+            if self.current_cn not in self.pending_handshakes: # Iniciar handshake si no está ya en progreso
                 self.protocol.enviar_handshake(ip, port, cn=self.current_cn)
                 self.pending_handshakes.add(self.current_cn)  # Marcar como "conectando..."
                 self.refresh_ui()
             return
         
-        # Si hay texto Y hay sesión, enviar inmediatamente
-        if text:
+        
+        if text: # Si hay texto y hay sesión, enviar inmediatamente
             msg_id = self.db.add_message(self.current_cn, self.my_nick, text, "sent", ts)
             self.scroll_offset = 0  # Resetear scroll
             self.w_input.text = ""  # Limpiar campo
             
-            # Intentar enviar el mensaje por la red
-            if not self.protocol.enviar_mensaje(ip, port, text, msg_id):
-                # Si falla el envío, marcar como pendiente y cerrar sesión
-                self.db.mark_message_status(self.current_cn, msg_id, "pending")
+            if not self.protocol.enviar_mensaje(ip, port, text, msg_id): # Intentar enviar el mensaje por la red
+                self.db.mark_message_status(self.current_cn, msg_id, "pending") # Si falla el envío, marcar como pendiente y cerrar sesión
                 self.db.set_contact_connected(self.current_cn, False)
                 self.protocol.cerrar_sesion(ip, port)
             
-            self.refresh_ui()  # Actualizar UI
+            self.refresh_ui()
 
     def force_disconnect(self):  # Fuerza la desconexión manual del contacto actual (Ctrl+D)
-        # Útil para cerrar sesión voluntariamente o simular desconexión
-        
         if not self.current_cn:  # Sin contacto seleccionado, no hacer nada
             return
         
         info = self.db.get_contact_info(self.current_cn)
         if info and info.get("ip"):  # Si el contacto tiene IP
-            # Cerrar sesión en el protocolo (elimina cipher states, claves de sesión, etc.)
-            self.protocol.cerrar_sesion(info["ip"], info["port"])
-            # Marcar como desconectado en BD
-            self.db.set_contact_connected(self.current_cn, False)
-            # Añadir mensaje de sistema informativo
-            ts = datetime.now().strftime("%H:%M")
+            self.protocol.cerrar_sesion(info["ip"], info["port"]) # Cerrar sesión en el protocolo 
+            self.db.set_contact_connected(self.current_cn, False) # Marcar como desconectado en BD
+            ts = datetime.now().strftime("%H:%M") # Añadir mensaje de sistema informativo
             self.db.add_message(self.current_cn, "Sys", "Desconectado manualmente", "system", ts)
-            self.refresh_ui()  # Actualizar UI (icono cambia a rojo 🔴)
+            self.refresh_ui()
 
     async def auto_connect_and_send_all(self):  # Reconecta automáticamente con todos los contactos al iniciar
-        # Esta función se ejecuta una vez al arrancar la aplicación (tras cargar sesiones de BD)
-        # Intenta restablecer todas las sesiones guardadas previamente
         
         await asyncio.sleep(0.5)  # Delay inicial para dar tiempo a que todo se inicialice
+        all_contacts = list(self.db.get_all_contacts().items()) # Obtener todos los contactos de la BD
         
-        # Obtener todos los contactos de la BD
-        all_contacts = list(self.db.get_all_contacts().items())
-        
-        # Intentar handshake con cada contacto (solo si tienen IP y puerto)
-        for cn, info in all_contacts:
+        for cn, info in all_contacts: # Intentar handshake con cada contacto
             ip = info.get("ip")
             port = info.get("port")
             if not ip or not port:  # Si no hay IP/puerto, saltar
                 continue
-            
-            # Enviar handshake (puede ser nuevo o restaurar sesión guardada)
-            self.protocol.enviar_handshake(ip, port, cn=cn)
-            await asyncio.sleep(0.1)  # Pequeño delay entre handshakes (no saturar la red)
+
+            self.protocol.enviar_handshake(ip, port, cn=cn) # Enviar handshake 
+            await asyncio.sleep(0.1)  # Pequeño delay entre handshakes
         
         self.refresh_ui()  # Actualizar UI
 
     async def monitor_window_size(self):  # Monitorea cambios en el tamaño de la ventana terminal
-        # Cuando el usuario redimensiona la terminal, debemos recalcular los anchos para alineación
-        # Esta tarea se ejecuta en bucle infinito cada 100ms
         
         while True:
             await asyncio.sleep(0.1)  # Verificar cada 100ms
             try:
                 if self.w_chat_window.render_info:  # Si hay info de renderizado disponible
                     current_width = self.w_chat_window.render_info.window_width
-                    # Si el ancho cambió, forzar redibujado
-                    if current_width != self._last_window_width and current_width > 0:
+                    if current_width != self._last_window_width and current_width > 0: # Si el ancho cambió, forzar redibujado
                         self._last_window_width = current_width
                         if self.app:
                             self.app.invalidate()  # Redibuja toda la interfaz
@@ -817,9 +793,6 @@ class ChatTUI: # Clase principal de la interfaz de usuario (TUI = Text User Inte
                 pass  # Ignorar errores (puede que render_info no esté disponible aún)
     
     async def force_ui_refresh(self):  # Fuerza redibujado constante de la UI
-        # Esta tarea evita que la UI se congele o no responda a eventos
-        # En Windows especialmente, prompt_toolkit puede "dormirse" sin esto
-        
         while True:
             await asyncio.sleep(0.05)  # Cada 50ms (20 veces por segundo)
             try:
@@ -829,21 +802,16 @@ class ChatTUI: # Clase principal de la interfaz de usuario (TUI = Text User Inte
                 pass  # Ignorar errores
 
     async def check_ack_timeouts(self):  # Comprueba timeouts de ACKs no recibidos
-        # Esta tarea verifica si algún mensaje enviado no recibió ACK en tiempo razonable
-        # Si un mensaje queda sin ACK mucho tiempo, asumimos que la conexión se perdió
-        
         while True:
             await asyncio.sleep(0.5)  # Verificar cada 500ms
             
             for cn in list(self.contact_keys):  # Iterar por cada contacto
-                # Si estamos enviando pendientes, no verificar timeouts (esperado que tarde)
-                if cn in self.sending_pending:
+                if cn in self.sending_pending: # Si estamos enviando pendientes, no verificar timeouts
                     continue
                 
                 info = self.db.get_contact_info(cn)
                 if info and info.get("is_connected"):  # Solo verificar si está marcado como conectado
-                    # Verificar si hay mensajes con timeout (sin ACK en >0.5s)
-                    has_timeout = self.db.check_message_timeouts(cn, timeout_seconds=0.5)
+                    has_timeout = self.db.check_message_timeouts(cn, timeout_seconds=0.5) # Verificar si hay mensajes con timeout (sin ACK en >0.5s)
                     
                     if has_timeout:  # Si hay timeout, asumir desconexión
                         self.db.set_contact_connected(cn, False)  # Marcar como desconectado
@@ -852,41 +820,25 @@ class ChatTUI: # Clase principal de la interfaz de usuario (TUI = Text User Inte
                         if ip and port:
                             self.protocol.cerrar_sesion(ip, port)  # Cerrar sesión en protocolo
                         
-                        # Todos los mensajes "sent" vuelven a "pending" (se reenviarán al reconectar)
-                        msgs = self.db.get_history(cn)
+                        msgs = self.db.get_history(cn) # Todos los mensajes "sent" vuelven a "pending" (se reenviarán al reconectar)
                         for msg in msgs:
-                            if msg.get("status") == "sent":  # 🕒 -> pendiente
+                            if msg.get("status") == "sent":
                                 self.db.mark_message_status(cn, msg["id"], "pending")
                         
-                        self.refresh_ui()  # Actualizar UI (icono rojo 🔴)
+                        self.refresh_ui()
 
     async def _keep_loop_awake(self):  # Tarea especial para Windows: mantener el event loop activo
-        # === PROBLEMA DE WINDOWS CON PROMPT_TOOLKIT ===
-        # En Windows, el event loop de asyncio puede "dormirse" mientras espera input del usuario
-        # Esto causa que las tareas asíncronas (envío de mensajes, ACKs, redibujado) se bloqueen
-        # hasta que el usuario presiona una tecla (especialmente Enter)
-        #
-        # === SOLUCIÓN: WAKEUP PACKETS ===
-        # Enviamos paquetes UDP a nosotros mismos constantemente (cada 100ms)
-        # Esto genera eventos de I/O que fuerzan al event loop a despertarse y procesar todas
-        # las tareas pendientes (envíos, ACKs, redibujado de UI, etc.)
-        #
-        # Sin esta tarea, los mensajes solo se enviarían al presionar Enter otra vez
-        
         import socket
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # Socket UDP
         sock.bind(('127.0.0.1', 0))  # Bind a localhost en puerto aleatorio
-        addr = sock.getsockname()  # Obtener dirección (localhost, puerto_aleatorio)
-        sock.setblocking(False)  # No bloquear en recv (importante para asyncio)
+        addr = sock.getsockname()  # Obtener dirección
+        sock.setblocking(False)  # No bloquear en recv 
         
         while True:
             await asyncio.sleep(0.1)  # Cada 100ms
             try:
-                # Enviar paquete a nosotros mismos (genera evento de I/O)
-                sock.sendto(b'wake', addr)
-                
-                # Leer para vaciar el buffer (evitar acumulación)
-                try:
+                sock.sendto(b'wake', addr) # Enviar paquete a nosotros mismos (genera evento de I/O)
+                try: # Leer para vaciar el buffer (evitar acumulación)
                     sock.recv(1024)  # Intentar recibir
                 except BlockingIOError:  # Es normal que falle (socket no bloqueante)
                     pass
@@ -894,26 +846,15 @@ class ChatTUI: # Clase principal de la interfaz de usuario (TUI = Text User Inte
                 pass  # Ignorar cualquier error (no crítico)
 
     async def run(self):  # Función principal que ejecuta la TUI y todas las tareas en background
-        # Esta función es el punto de entrada de la TUI después de la inicialización
-        # Lanza todas las tareas asíncronas necesarias y ejecuta la aplicación prompt_toolkit
-        
-        # === LANZAMIENTO DE TAREAS EN BACKGROUND ===
-        # Todas estas tareas se ejecutan concurrentemente en el event loop
-        
         self._timeout_check_task = asyncio.create_task(self.check_ack_timeouts())  # Verificar timeouts de ACKs
         self._reconnect_timeout_task = asyncio.create_task(self.protocol.check_reconnect_timeouts())  # Verificar timeouts de reconexión (protocol.py)
         self._window_monitor_task = asyncio.create_task(self.monitor_window_size())  # Monitorear redimensionado de terminal
         self._ui_refresh_task = asyncio.create_task(self.force_ui_refresh())  # Refrescar UI constantemente
         self._wakeup_task = asyncio.create_task(self._keep_loop_awake())  # Mantener event loop despierto (Windows fix)
         
-        try:
-            # Ejecutar la aplicación prompt_toolkit (bloquea hasta que el usuario salga con Ctrl+C)
+        try: # Ejecutar la aplicación prompt_toolkit (bloquea hasta que el usuario salga con Ctrl+C)
             await self.app.run_async()
-        finally:
-            # === LIMPIEZA AL SALIR ===
-            # Cuando el usuario cierra la aplicación, debemos cancelar todas las tareas en background
-            # Si no hacemos esto, el programa no terminará correctamente
-            
+        finally: # Limpiar al salir
             for task in [self._timeout_check_task, self._reconnect_timeout_task, 
                          self._window_monitor_task, self._ui_refresh_task, self._wakeup_task]:
                 if task:  # Si la tarea fue creada
