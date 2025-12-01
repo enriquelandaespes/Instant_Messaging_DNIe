@@ -224,9 +224,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol): # Clase que implementa el prot
             
             if self.callback:
                 self.callback(addr, msg, nombre, msg_id)
-            
-            if msg_id:
-                self.enviar_ack(addr[0], addr[1], msg_id)
         except:
             pass
 
@@ -488,7 +485,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol): # Clase que implementa el prot
             timeout_addrs = []
             
             for addr, info in list(self.reconnect_pending.items()):
-                if current_time - info['timestamp'] > 0.5:
+                if current_time - info['timestamp'] > 0.1:
                     timeout_addrs.append(addr)
             
             for addr in timeout_addrs:
