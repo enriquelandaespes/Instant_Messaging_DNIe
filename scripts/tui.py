@@ -579,105 +579,78 @@ class ChatTUI: # Clase principal de la interfaz de usuario (TUI = Text User Inte
         
         ts = datetime.now().strftime("%H:%M")  # Timestamp para mensajes del sistema
         
-        if text in ["HANDSHAKE_OK_INIT", "HANDSHAKE_OK_RESP"]: # EVENTO 1: HANDSHAKE COMPLETADO (iniciador o respondedor)
+        if text in ["HANDSHAKE_OK_INIT", "HANDSHAKE_OK_RESP"]: # HANDSHAKE COMPLETADO
             self.db.set_contact_connected(contact_id, True) 
             msgs = self.db.get_history(contact_id) 
             user_msgs = [m for m in msgs if m.get('sender') != "Sys"]
             if len(user_msgs) == 0:  # Primera vez que hablamos con este contacto
                 self.db.add_message(contact_id, "Sys", "🔒 Conexión segura establecida", "system", ts)
             
-            # Protocolo de sincronización: avisar que vamos a enviar mensajes pendientes
-            self.protocol.enviar_pending_send(addr[0], addr[1])
-            # Enviar todos los mensajes que quedaron pendientes mientras estábamos desconectados
-            self.send_pending_messages(contact_id, addr[0], addr[1], lambda: self.protocol.enviar_pending_done(addr[0], addr[1]))
-            # Marcar que ya enviamos nuestros pendientes (para evitar duplicados)
-            self.pending_sent[(addr[0], addr[1])] = True
+            self.protocol.enviar_pending_send(addr[0], addr[1]) # Avisar que vamos a enviar mensajes pendientes
+            self.send_pending_messages(contact_id, addr[0], addr[1], lambda: self.protocol.enviar_pending_done(addr[0], addr[1])) # Enviar todos los mensajes que quedaron pendientes mientras estábamos desconectados
+            self.pending_sent[(addr[0], addr[1])] = True # Marcar que ya enviamos nuestros pendientes (para evitar duplicados)
         
-        # EVENTO 2: SESIÓN RESTAURADA (somos iniciadores)
-        elif text == "SESSION_RESTORED_INIT":
+        elif text == "SESSION_RESTORED_INIT": # SESIÓN RESTAURADA Iniciar
             self.db.set_contact_connected(contact_id, True)
-            # Mismo protocolo que en handshake: enviar pendientes
-            self.protocol.enviar_pending_send(addr[0], addr[1])
+            self.protocol.enviar_pending_send(addr[0], addr[1]) # Enviar pendientes
             self.send_pending_messages(contact_id, addr[0], addr[1], lambda: self.protocol.enviar_pending_done(addr[0], addr[1]))
             self.pending_sent[(addr[0], addr[1])] = True
         
-        # EVENTO 3: SESIÓN RESTAURADA (somos respondedores)
-        elif text == "SESSION_RESTORED_RESP":
+        elif text == "SESSION_RESTORED_RESP": # SESIÓN RESTAURADA Responder
             self.db.set_contact_connected(contact_id, True)
-            # Esperamos a que el iniciador envíe sus pendientes primero
-            self.pending_sent[(addr[0], addr[1])] = False  # Aún no enviamos los nuestros
+            self.pending_sent[(addr[0], addr[1])] = False  # Esperamos a que el iniciador envíe sus pendientes primero
         
-        # EVENTO 4: EL PEER NOS AVISA QUE VA A ENVIAR PENDIENTES
-        elif text == "PEER_SENDING_PENDING":
+        elif text == "PEER_SENDING_PENDING": # Nos indica que va a enviarnos mensajes pendientes
             pass  # Solo informativo, no hacemos nada
         
-        # EVENTO 5: EL PEER NOS PIDE QUE ENVIEMOS NUESTROS PENDIENTES
-        elif text == "SEND_MY_PENDING":
-            # Solo enviar si aún no lo hemos hecho (evitar duplicados)
-            if not self.pending_sent.get((addr[0], addr[1]), False):
+        elif text == "SEND_MY_PENDING": # Nos indica que quiere que le enviemos nuestros mensajes pendientes
+            if not self.pending_sent.get((addr[0], addr[1]), False): # Solo enviar si aún no lo hemos hecho (evitar duplicados)
                 self.pending_sent[(addr[0], addr[1])] = True
                 self.protocol.enviar_pending_send(addr[0], addr[1])
                 self.send_pending_messages(contact_id, addr[0], addr[1], lambda: self.protocol.enviar_pending_done(addr[0], addr[1]))
         
-        # EVENTO 6: TIMEOUT DE RECONEXIÓN (sesión cerrada por inactividad)
-        elif text == "RECONNECT_TIMEOUT":
+        elif text == "RECONNECT_TIMEOUT": # Timeout de reconexión
             self.db.set_contact_connected(contact_id, False)  # Marcar como desconectado
-            self.refresh_ui()  # Actualizar UI (icono rojo 🔴)
+            self.refresh_ui() 
             return  # No procesamos más, terminamos aquí
         
-        # EVENTO 7: ERROR EN EL HANDSHAKE
-        elif text.startswith("HANDSHAKE_ERROR"):
+        elif text.startswith("HANDSHAKE_ERROR"): # Error en el Handshake
             self.db.set_contact_connected(contact_id, False)  # Marcar como desconectado
         
-        # EVENTO 8: ERROR DE DESCIFRADO (mensaje corrupto o clave incorrecta)
-        elif text == "ERROR_DESCIFRADO":
+        
+        elif text == "ERROR_DESCIFRADO": # Error de descifrado (mensaje corrupto o clave incorrecta)
             pass  # Solo informativo, el protocolo ya maneja el error
         
-        # EVENTO 9: ACK RECIBIDO (confirmación de que el peer recibió nuestro mensaje)
-        elif text.startswith("ACK|"):
+        elif text.startswith("ACK|"): # ACK recibido 
             ack_msg_id = text.split('|', 1)[1]  # Extraemos el ID del mensaje confirmado
-            # Actualizar estado del mensaje: 🕒 (sent) -> ✅ (delivered)
-            self.db.mark_message_status(contact_id, ack_msg_id, "delivered")
+            self.db.mark_message_status(contact_id, ack_msg_id, "delivered") # Actualizar estado del mensaje: 🕒 (sent) -> ✅ (delivered)
         
-        # EVENTO 10: MENSAJE NORMAL RECIBIDO (texto del peer)
-        else:
+        else: # Mensaje normal recibido
             self.db.set_contact_connected(contact_id, True)  # Asegurar que está marcado como conectado
-            # Añadir mensaje al historial con estado "received"
-            received_msg_id = self.db.add_message(contact_id, real_cn, text, "received", ts, msg_id=msg_id)
-            # Si estamos viendo el chat con este contacto, marcar como leído inmediatamente
-            if self.current_cn == contact_id:
+            received_msg_id = self.db.add_message(contact_id, real_cn, text, "received", ts, msg_id=msg_id) # Añadir mensaje al historial con estado "received"
+            if self.current_cn == contact_id: # Si estamos viendo el chat con este contacto, marcar como leído inmediatamente
                 self.db.mark_message_as_read_by_id(contact_id, received_msg_id)
         
         self.refresh_ui()  # Actualizar interfaz para reflejar cambios
 
-    def send_pending_messages(self, cn, ip, port, callback=None):
-        # Envía todos los mensajes pendientes de un contacto (tras reconectar o handshake)
-        # Esta función es crítica para garantizar que ningún mensaje se pierde
-        
+    def send_pending_messages(self, cn, ip, port, callback=None): # Envía todos los mensajes pendientes de un contacto (tras reconectar o handshake)
         pending = self.db.get_pending_messages(cn)  # Obtener mensajes con estado "pending"
         
-        # Si no hay mensajes pendientes O ya estamos enviando para este contacto, salir
-        if not pending or cn in self.sending_pending:
+        if not pending: # Si no hay mensajes pendientes salir
             if callback:  # Si hay callback (normalmente enviar_pending_done), ejecutarlo
                 callback()
             return
         
-        # Verificar que hay sesión activa antes de enviar
-        if not self.protocol.tiene_sesion(ip, port):
-            return  # Sin sesión, no podemos enviar (no debería pasar)
         
-        # Añadir contacto al conjunto de "enviando pendientes" (evita re-entrada)
-        self.sending_pending.add(cn)
+        if not self.protocol.tiene_sesion(ip, port): # Verificar que hay sesión activa antes de enviar
+            return
         
-        async def send_all_async():
-            # Función asíncrona interna que envía mensajes uno por uno
-            # El delay entre mensajes es importante para no saturar la red
-            
+        self.sending_pending.add(cn) # Añadir contacto al conjunto de "enviando pendientes"
+        
+        async def send_all_async(): # Función asíncrona interna que envía mensajes uno por uno el delay entre mensajes es importante para no saturar la red
             for msg in pending:  # Iteramos por cada mensaje pendiente
-                # Enviar mensaje por la red (cifrado con Noise IK)
-                self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
-                # Actualizar estado en BD: "pending" -> "sent" (🕒 reloj)
-                self.db.mark_message_status(cn, msg['id'], "sent")
+                self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id']) # Enviar mensaje por la red
+                self.db.mark_message_status(cn, msg['id'], "sent") # Actualizar estado en BD: "pending" -> "sent" (🕒 reloj)
                 
                 # Delay crítico: da tiempo al event loop para procesar otros eventos
                 # Sin esto, la UI se congelaría durante el envío masivo
