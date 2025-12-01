@@ -79,7 +79,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
     def verificar_firma_autoridad(self, cert_recibido):
         # TRUST STORE: Itera sobre una carpeta de certificados de confianza (CA)
         # e intenta validar la firma con cada uno de ellos.
-        TRUST_DIR ="certificados_autoridad"  # Nombre de tu carpeta con los certificados descargados
+        TRUST_DIR = "certificados_autoridad"  # Nombre de tu carpeta con los certificados descargados
         
         if not os.path.exists(TRUST_DIR):
             return False
@@ -88,15 +88,21 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         for filename in os.listdir(TRUST_DIR):
             filepath = os.path.join(TRUST_DIR, filename)
             
+            # Saltamos archivos ocultos del sistema (ej: .DS_Store) para evitar errores tontos
+            if filename.startswith("."):
+                continue
+
             # Intentamos cargar cada archivo como un certificado
             try:
                 with open(filepath, "rb") as f:
                     ca_bytes = f.read()
-                    # Probamos cargar formato PEM y si falla, DER (por si acaso)
-                    try:
-                        ca_cert = x509.load_pem_x509_certificate(ca_bytes, default_backend())
-                    except:
-                        ca_cert = x509.load_der_x509_certificate(ca_bytes, default_backend())
+                    
+                # Probamos cargar formato PEM y si falla, DER (por si acaso)
+                try:
+                    ca_cert = x509.load_pem_x509_certificate(ca_bytes, default_backend())
+                except:
+                    # Si falla PEM, probamos DER (formato binario habitual en DNIe)
+                    ca_cert = x509.load_der_x509_certificate(ca_bytes, default_backend())
 
                 # Obtenemos la clave pública de esta Autoridad
                 ca_public_key = ca_cert.public_key()
