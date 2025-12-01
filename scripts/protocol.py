@@ -77,40 +77,33 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             self.reconnect_pending[addr]['timestamp'] = asyncio.get_event_loop().time()
 
     def verificar_firma_autoridad(self, cert_recibido):
-        # Función para verificar la firma de la autoridad (TRUST STORE)
-        TRUST_DIR = "certificados_autoridad" 
-        
-        if not os.path.exists(TRUST_DIR):
-            return False
+        # Verifica criptográficamente que el certificado recibido ha sido firmado
+        # por la Autoridad de Certificación (AC) del DNIe real.
+        # Requiere el archivo 'ac_dnie_raiz.pem' en el directorio.
+        try:
+            # 1. Cargar el certificado de la "Policía" (AC Raíz)
+            with open("ac_dnie_raiz.pem", "rb") as f:
+                ca_cert_bytes = f.read()
+                ca_cert = x509.load_pem_x509_certificate(ca_cert_bytes, default_backend())
 
-        for filename in os.listdir(TRUST_DIR):
-            if filename.startswith("."): 
-                continue
-            filepath = os.path.join(TRUST_DIR, filename)
+            # 2. Obtener la clave pública de la Autoridad
+            ca_public_key = ca_cert.public_key()
+
+            # 3. Verificar la firma digital del certificado recibido
+            ca_public_key.verify(
+                cert_recibido.signature,
+                cert_recibido.tbs_certificate_bytes,
+                padding.PKCS1v15(), # Estándar usado en firmas X.509 RSA
+                cert_recibido.signature_hash_algorithm
+            )
+            return True
             
-            try:
-                with open(filepath, "rb") as f:
-                    ca_bytes = f.read()
-                
-                try:
-                    ca_cert = x509.load_pem_x509_certificate(ca_bytes, default_backend())
-                except:
-                    ca_cert = x509.load_der_x509_certificate(ca_bytes, default_backend())
-
-                try:
-                    ca_cert.public_key().verify(
-                        cert_recibido.signature,
-                        cert_recibido.tbs_certificate_bytes,
-                        padding.PKCS1v15(),
-                        cert_recibido.signature_hash_algorithm
-                    )
-                    return True 
-                except:
-                    continue 
-            except:
-                continue
-
-        return False
+        except FileNotFoundError:
+            print("ERROR CRÍTICO: No se encuentra 'ac_dnie_raiz.pem'. No se puede validar la autoridad.")
+            return False
+        except Exception as e:
+            print(f"ALERTA DE SEGURIDAD: Certificado no emitido por autoridad válida: {e}")
+            return False
 
     def handle_ephemeral_key(self, payload, addr): 
         # Fase 1 del Handshake: Procesamiento de la clave pública efímera (ECDH).
@@ -154,11 +147,18 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             pass
     
     async def handle_handshake(self, payload, addr, is_response): 
-        # Fase 2 del Handshake: Verificación de identidad y establecimiento de sesión permanente.
-        if addr in self.sessions: 
-            pass # Permitimos renegociación si es necesario
         
-        # Seguridad: Verificar que existe un contexto criptográfico efímero previo
+        # Fase 2 del Handshake: 
+        # 1. Recibe credenciales cifradas con claves efímeras.
+        # 2. Valida la firma de la autoridad (Policía).
+        # 3. Aplica política TOFU (Trust On First Use) para detectar suplantaciones.
+        # 4. Establece la sesión permanente.
+        
+        # 1. Idempotencia: Si ya hay sesión establecida, ignoramos el paquete
+        if addr in self.sessions: 
+            return
+        
+        # 2. Seguridad de flujo: Debe existir un contexto efímero (Fase 1 previa)
         if addr not in self.ephemeral_keys or 'temp_cipher' not in self.ephemeral_keys[addr]:
             return
         
@@ -185,111 +185,130 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 # Si esto falla, el paquete fue modificado o no viene de quien tiene la clave efímera
                 cert_bytes = temp_cipher.decrypt(nonce, encrypted_cert, None)
             except Exception:
+                print(f"Error de integridad en handshake desde {addr}")
                 if addr in self.ephemeral_keys:
                     del self.ephemeral_keys[addr]
                 return
+  
+            try:
+                cert_obj = x509.load_der_x509_certificate(cert_bytes, default_backend())
+                
+                # [SEGURIDAD 1] VALIDACIÓN DE AUTORIDAD
+                # Antes de leer el nombre, verificamos que el certificado fue emitido por la Policía
+                if not self.verificar_firma_autoridad(cert_obj):
+                    print(f"ALERTA CRÍTICA: {addr} presentó un certificado NO firmado por la autoridad raíz.")
+                    if addr in self.ephemeral_keys:
+                        del self.ephemeral_keys[addr]
+                    return
+
+                # Extracción del Nombre (CN)
+                cn_attrs = cert_obj.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+                if cn_attrs:
+                    raw = str(cn_attrs[0].value)
+                    nombre = raw.replace("(AUTENTICACIÓN)", "").replace("(Autenticación)", "").replace("(FIRMA)", "").replace("(Firma)", "").strip()
+                else:
+                    nombre = "DNIe Desconocido"
+                    
+            except Exception as e:
+                print(f"Error procesando certificado: {e}")
+                return
             
-            # --- PRIORIDAD CONEXIÓN: Establecemos sesión ANTES de parsear certificado ---
+            # [SEGURIDAD 2] IMPLEMENTACIÓN DE TOFU (Trust On First Use)
+            # Verificamos si ya conocemos a este usuario y si su clave pública coincide
+            contact_info = self.db.get_contact_info(nombre)
+            
+            if contact_info:
+                # CASO: Usuario conocido. Verificamos "Pinning"
+                pk_guardada = contact_info.get("public_key") # Hex string
+                pk_recibida = peer_pub_bytes.hex()
+                
+                if pk_guardada and pk_guardada != pk_recibida:
+                    print(f"!!! ALERTA DE SEGURIDAD TOFU !!!")
+                    print(f"El usuario '{nombre}' ha presentado un DNIe diferente al registrado anteriormente.")
+                    print(f"Registrado: {pk_guardada[:10]}... | Recibido: {pk_recibida[:10]}...")
+                    print("Posible ataque Man-in-the-Middle o suplantación de identidad.")
+                    
+                    # Cortamos la conexión inmediatamente por seguridad
+                    if addr in self.ephemeral_keys:
+                        del self.ephemeral_keys[addr]
+                    return
+                
+                # Si coincide, todo correcto. Es el usuario legítimo renovando sesión.
+
+            # CÁLCULO DE CLAVE DE SESIÓN FINAL
+            # Usamos la clave pública del DNIe recibida para el acuerdo de claves
             peer_key_obj = x25519.X25519PublicKey.from_public_bytes(peer_pub_bytes)
             shared_secret = self.dnie.private_key.exchange(peer_key_obj)
-            session_key = hashlib.blake2s(shared_secret, digest_size=32).digest()
+            session_key = hashlib.blake2s(shared_secret, digest_size=32).digest() 
             
-            # Nombre temporal, se actualizará si el certificado es válido
-            nombre = "Unknown" 
-            
+            # Establecimiento de la sesión en memoria
             self.sessions[addr] = {
                 'cipher': ChaCha20Poly1305(session_key), 
                 'name': nombre,
                 'state': 'ESTABLISHED'
             }
-            # ---------------------------------------------------------------------------
-
-            # PROCESAMIENTO DE CERTIFICADO Y TOFU (Si falla, no rompe la conexión ya creada)
-            try:
-                cert_obj = x509.load_der_x509_certificate(cert_bytes, default_backend())
-                
-                # Verificación de autoridad
-                autoridad_ok = self.verificar_firma_autoridad(cert_obj)
-                
-                cn_attrs = cert_obj.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
-                if cn_attrs:
-                    raw = str(cn_attrs[0].value)
-                    nombre_real = raw.replace("(AUTENTICACIÓN)", "").replace("(Autenticación)", "").replace("(FIRMA)", "").replace("(Firma)", "").strip()
-                    
-                    # TOFU CHECK
-                    contact_info = self.db.get_contact_info(nombre_real)
-                    tofu_ok = True
-                    if contact_info:
-                        pk_guardada = contact_info.get("public_key")
-                        pk_recibida = peer_pub_bytes.hex()
-                        if pk_guardada and pk_guardada != pk_recibida:
-                            tofu_ok = False # Ataque detectado
-                    
-                    if tofu_ok:
-                        # Si todo es correcto, actualizamos la sesión con el nombre real
-                        self.sessions[addr]['name'] = nombre_real
-                        nombre = nombre_real
-                        
-                        # Guardamos en DB
-                        self.db.add_or_update_contact(
-                            nombre,
-                            name=nombre,
-                            ip=addr[0],
-                            port=addr[1],
-                            session_key=session_key.hex(), 
-                            peer_cert=cert_bytes.hex(),
-                            public_key=peer_pub_bytes.hex()
-                        )
-            except:
-                pass # Si el certificado falla, seguimos conectados como "Unknown"
             
-            if is_response: # Si somos los que iniciamos el handshake
+            # PERSISTENCIA EN BASE DE DATOS
+            # Guardamos la clave pública (peer_pub_bytes)
+            self.db.add_or_update_contact(
+                nombre, # ID del contacto
+                name=nombre,
+                ip=addr[0],
+                port=addr[1],
+                session_key=session_key.hex(), 
+                peer_cert=cert_bytes.hex(),
+                public_key=peer_pub_bytes.hex() 
+            )
+            
+            # Gestión de roles para sincronización
+            if is_response: 
                 self.role[addr] = "initiator" 
                 cb_msg = "HANDSHAKE_OK_INIT"
             else:
-                self.role[addr] = "responder" # Si respondemos al handshake
+                self.role[addr] = "responder" 
                 cb_msg = "HANDSHAKE_OK_RESP"
             
+            # Notificar a la UI
             if self.callback:
                 self.callback(addr, cb_msg, nombre, None)
             
-            # Limpiar clave efímera después de todo
+            # Limpieza PFS (Borramos claves efímeras usadas)
             if addr in self.ephemeral_keys:
                 del self.ephemeral_keys[addr]
                 
-        except Exception:
+        except Exception as e:
+            print(f"Excepción en handle_handshake: {e}")
             pass
 
     def handle_message(self, payload, addr): 
-        # Manejamos el mensaje que nos llega 
+        # Procesa un mensaje de chat cifrado entrante
         if addr not in self.sessions:
             return
         session = self.sessions[addr]
         cipher = session['cipher']
         nombre = session.get('name', 'Unknown')
         try:
+            # DESCIFRADO DEL MENSAJE
             nonce = payload[:12]
             ciphertext = payload[12:]
+            
             plaintext = cipher.decrypt(nonce, ciphertext, None)
             msg_data = plaintext.decode('utf-8')
             
             if '|' in msg_data:
                 msg_id, msg = msg_data.split('|', 1)
-                self.enviar_ack(addr[0], addr[1], msg_id)
+                self.enviar_ack(addr[0], addr[1], msg_id) # Envio de ACK para tick visual
             else:
                 msg_id = None
                 msg = msg_data
             
             if self.callback:
                 self.callback(addr, msg, nombre, msg_id)
-            
-            if msg_id:
-                self.enviar_ack(addr[0], addr[1], msg_id)
         except:
             pass
 
     def enviar_handshake(self, ip, port, cn=None): 
-        # Enviamos el handshake (Lógica original de reconexión rápida)
+        # Inicia el proceso de conexión.
         addr = (ip, port)
 
         if addr in self.sessions:
@@ -301,14 +320,14 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         saved_key = None
         contact_name = None
         
-        # Busqueda de la clave guardada por nombre
+        # Busqueda de la clave guardada
         if cn:
             contact_info = self.db.get_contact_info(cn)
             if contact_info:
                 saved_key = contact_info.get("session_key")
                 contact_name = contact_info.get("name", cn)
         
-        # Busqueda de la clave guardada en la base de datos por IP/Puerto
+        # Busqueda de la clave guardada en la base de datos
         if not saved_key:
             all_contacts = self.db.get_all_contacts()
             for name, info in all_contacts.items():
@@ -318,7 +337,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                         contact_name = info.get("name", name)
                         break
         
-        # Intento de Reconexión Rápida (Protocolo original)
+        # Intento de Reconexión Rápida 
         if saved_key: 
             try:
                 if isinstance(saved_key, str):
@@ -344,17 +363,16 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             except Exception:
                 pass
         
-        # Si falla reconexión -> Handshake Completo (Fase 1)
+        # Si falla reconexión -> Handshake Completo. Esto no afecta a ataques de man in the midle(Necesitan certificado+DNIe+pin)
         self.enviar_clave_efimera(ip, port)
         return False
     
     def enviar_clave_efimera(self, ip, port):
-        # Fase 1: Envía solo la clave pública efímera para establecer canal cifrado
+        # Envio de clave efímera al contacto para handshake sin certificados en PlainText
         if not self.transport:
             return
         try:
             addr = (ip, port)
-            # Generar nueva clave efímera para este handshake
             my_ephemeral_private = x25519.X25519PrivateKey.generate()
             public_bytes = my_ephemeral_private.public_key().public_bytes_raw()
             
@@ -363,7 +381,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 'public_bytes': public_bytes
             }
             
-            # Enviar solo la clave pública efímera
             packet = struct.pack("B", PKT_EPHEMERAL_KEY) + self.my_cid + public_bytes
             self.transport.sendto(packet, (ip, port))
         except Exception:
@@ -387,7 +404,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         return addr in self.sessions
 
     def enviar_paquete_credenciales(self, ip, port, tipo): 
-        # Envio de paquete de credenciales al contacto (Fase 2 cifrada)
+        # Envio de paquete de credenciales al contacto 
         if not self.transport:
             return
         addr = (ip, port)
@@ -399,7 +416,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             cert, firma = self.dnie.obtener_credenciales()
             temp_cipher = self.ephemeral_keys[addr]['temp_cipher']
             
-            # Cifrar el certificado con la clave temporal
             nonce = os.urandom(12) 
             encrypted_cert = temp_cipher.encrypt(nonce, cert, None)
             
@@ -429,7 +445,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             return False
 
     def enviar_ack(self, ip, port, msg_id): 
-        # Envio de ACK al contacto
+        # Envio de ACK al contacto(Igual que cuando se manda mensaje)
         addr = (ip, port)
         if addr not in self.sessions:
             return
@@ -477,19 +493,19 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         # Procesado de solicitud de reconexión
         all_contacts = self.db.get_all_contacts()
         for cn, info in all_contacts.items(): 
-            if info.get("ip") == addr[0] and info.get("port") == addr[1] and info.get("session_key"): 
+            if info.get("ip") == addr[0] and info.get("port") == addr[1] and info.get("session_key"): # Se obtiene la sesión del contacto
                 try:
                     session_key = bytes.fromhex(info.get("session_key"))
-                    self.sessions[addr] = { 
+                    self.sessions[addr] = { # Se establece la sesión (Cifrada obviamente) del contacto
                         'cipher': ChaCha20Poly1305(session_key),
                         'name': info.get("name", cn),
                         'state': 'ESTABLISHED'
                     }
-                    self.db.set_contact_connected(cn, True) 
+                    self.db.set_contact_connected(cn, True) # Ponemos el contacto como conectado
                     self.role[addr] = "responder" 
                     self.enviar_reconnect_resp(addr[0], addr[1])
-                    if self.callback: 
-                        self.callback(addr, "SESSION_RESTORED_RESP", info.get("name", cn), None) 
+                    if self.callback: # Si hay un callback
+                        self.callback(addr, "SESSION_RESTORED_RESP", info.get("name", cn), None) # Enviamos el callback
                     return
                 except Exception:
                     pass
@@ -503,8 +519,8 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 self.role[addr] = "initiator" 
                 session = self.sessions[addr]
                 self.db.set_contact_connected(cn, True)
-                if self.callback: 
-                    self.callback(addr, "SESSION_RESTORED_INIT", session.get("name", "Unknown"), None)
+                if self.callback: # Si hay un callback
+                    self.callback(addr, "SESSION_RESTORED_INIT", session.get("name", "Unknown"), None) # Enviamos el callback
 
     def enviar_pending_send(self, ip, port):
         # Envio de paquete de paquetes pendientes
@@ -559,9 +575,9 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                     timeout_addrs.append(addr)
             
             for addr in timeout_addrs: # Si hay timeouts
-                info = self.reconnect_pending.pop(addr) # Quitamos el contacto de la lista de pendientes
-                cn = info['cn'] 
+                info = self.reconnect_pending.pop(addr) # Se reconecta
+                cn = info['cn']
                 if addr in self.sessions:
-                    del self.sessions[addr] # Quitamos la sesión del contacto
+                    del self.sessions[addr]
                 if self.callback:
-                    self.callback(addr, "RECONNECT_TIMEOUT", cn, None) # Enviamos el callback
+                    self.callback(addr, "RECONNECT_TIMEOUT", cn, None)
