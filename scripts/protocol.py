@@ -223,9 +223,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol): # Clase que implementa el prot
             
             if self.callback:
                 self.callback(addr, msg, nombre, msg_id)
-            
-            if msg_id:
-                self.enviar_ack(addr[0], addr[1], msg_id)
+                
         except:
             pass
 
