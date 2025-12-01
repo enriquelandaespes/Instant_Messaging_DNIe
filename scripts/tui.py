@@ -636,21 +636,27 @@ class ChatTUI: # Clase principal de la interfaz de usuario (TUI = Text User Inte
     def send_pending_messages(self, cn, ip, port, callback=None): # Envía todos los mensajes pendientes de un contacto (tras reconectar o handshake)
         pending = self.db.get_pending_messages(cn)  # Obtener mensajes con estado "pending"
         
-        if not pending: # Si no hay mensajes pendientes salir
+        if not pending or cn in self.sending_pending: # Si no hay mensajes pendientes O ya estamos enviando para este contacto, salir
             if callback:  # Si hay callback (normalmente enviar_pending_done), ejecutarlo
                 callback()
             return
         
+        # Verificar que hay sesión activa antes de enviar
+        if not self.protocol.tiene_sesion(ip, port):
+            return  # Sin sesión, no podemos enviar (no debería pasar)
         
-        if not self.protocol.tiene_sesion(ip, port): # Verificar que hay sesión activa antes de enviar
-            return
+        # Añadir contacto al conjunto de "enviando pendientes" (evita re-entrada)
+        self.sending_pending.add(cn)
         
-        self.sending_pending.add(cn) # Añadir contacto al conjunto de "enviando pendientes"
-        
-        async def send_all_async(): # Función asíncrona interna que envía mensajes uno por uno el delay entre mensajes es importante para no saturar la red
+        async def send_all_async():
+            # Función asíncrona interna que envía mensajes uno por uno
+            # El delay entre mensajes es importante para no saturar la red
+            
             for msg in pending:  # Iteramos por cada mensaje pendiente
-                self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id']) # Enviar mensaje por la red
-                self.db.mark_message_status(cn, msg['id'], "sent") # Actualizar estado en BD: "pending" -> "sent" (🕒 reloj)
+                # Enviar mensaje por la red (cifrado con Noise IK)
+                self.protocol.enviar_mensaje(ip, port, msg['text'], msg['id'])
+                # Actualizar estado en BD: "pending" -> "sent" (🕒 reloj)
+                self.db.mark_message_status(cn, msg['id'], "sent")
                 
                 # Delay crítico: da tiempo al event loop para procesar otros eventos
                 # Sin esto, la UI se congelaría durante el envío masivo
