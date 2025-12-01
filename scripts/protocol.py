@@ -10,47 +10,46 @@ from cryptography.hazmat.backends import default_backend
 import config
 
 # Definición de los diferentes tipos de paquetes que tenemos
-PKT_EPHEMERAL_KEY = 0x01      # Fase 1 Handshake: Intercambio de clave pública efímera (X25519)
-PKT_MSG = 0x02                # Mensaje de chat cifrado (Payload de aplicación)
-PKT_ACK = 0x04                # Confirmación de recepción (Acknowledge)
-PKT_RECONNECT_REQ = 0x05      # Solicitud de reconexión rápida (Session Resumption)
-PKT_RECONNECT_RESP = 0x06     # Respuesta de reconexión aceptada
-PKT_PENDING_SEND = 0x07       # Señalización: "Voy a empezar a enviar mensajes pendientes"
-PKT_PENDING_DONE = 0x08       # Señalización: "He terminado de enviar mensajes pendientes"
-PKT_HANDSHAKE_INIT = 0x10     # Fase 2 Handshake: Certificado cifrado del Iniciador
-PKT_HANDSHAKE_RESP = 0x11     # Fase 2 Handshake: Certificado cifrado del Responder
+# IMPORTANTE: PKT_MSG y siguientes mantienen sus valores originales para compatibilidad
+PKT_EPHEMERAL_KEY = 0x01      # Nueva fase 1: solo clave pública efímera (nuevo)
+PKT_MSG = 0x02                # MANTIENE valor original
+PKT_ACK = 0x04                # MANTIENE valor original
+PKT_RECONNECT_REQ = 0x05      # MANTIENE valor original
+PKT_RECONNECT_RESP = 0x06     # MANTIENE valor original
+PKT_PENDING_SEND = 0x07       # MANTIENE valor original
+PKT_PENDING_DONE = 0x08       # MANTIENE valor original
+# Nuevos paquetes para handshake cifrado
+PKT_HANDSHAKE_INIT = 0x10     # Fase 2: certificado cifrado (init)
+PKT_HANDSHAKE_RESP = 0x11     # Fase 2: certificado cifrado (resp)
 
-class SecureIMProtocol(asyncio.DatagramProtocol): 
-    # Clase que implementa el protocolo de mensajería segura sobre UDP.
-
+class SecureIMProtocol(asyncio.DatagramProtocol): # Clase que implementa el protolo de paso de mensajes seguro
     def __init__(self, dnie_manager, db, on_msg_callback):
         self.dnie = dnie_manager
         self.db = db
         self.transport = None
         self.callback = on_msg_callback
-        self.sessions = {} # Almacena el estado de las sesiones activas {addr: {cipher, name, state}}
-        self.my_cid = os.urandom(4) # Identificador de conexión aleatorio para evitar ataques de Spoofing
-        self.reconnect_pending = {} # Control de timeouts para intentos de reconexión
-        self.role = {} # Rol en la conexión: 'initiator' o 'responder' (importante para el orden de envío)
-        self.pending_sent = {} # Estado de sincronización de mensajes pendientes
-        self.ephemeral_keys = {} # Almacenamiento temporal para el intercambio Diffie-Hellman efímero
+        self.sessions = {}
+        self.my_cid = os.urandom(4)
+        self.handshake_in_progress = {}
+        self.reconnect_pending = {}
+        self.role = {}
+        self.pending_sent = {}
+        # Claves efímeras para encriptar el certificado durante el handshake
+        self.ephemeral_keys = {}  # {addr: {'private': key, 'peer_public': key, 'temp_cipher': cipher}}
 
-    def connection_made(self, transport): 
-        # Callback de asyncio cuando el socket UDP está listo para transmitir
+    def connection_made(self, transport): # Al establecer la conexión
         self.transport = transport
         if self.callback:
             self.callback(None, "SESSIONS_READY", "System", None)
 
-    def datagram_received(self, data, addr): 
-        # Callback principal de recepción de paquetes UDP despacha el paquete según su tipo.
-        if len(data) < 5: # Descartar paquetes malformados o demasiado cortos
+    def datagram_received(self, data, addr): # Al recibir un paquete
+        if len(data) < 5:
             return
         msg_type = data[0]
-        payload = data[5:] # El payload comienza después del tipo (1 byte) y el CID (4 bytes)
+        payload = data[5:]
         
-        self.touch_session(addr) # Actualizar timestamp de actividad 
+        self.touch_session(addr)
         
-        # Máquina de estados para procesar cada tipo de paquete
         if msg_type == PKT_EPHEMERAL_KEY:
             self.handle_ephemeral_key(payload, addr)
         elif msg_type == PKT_HANDSHAKE_INIT:
@@ -70,8 +69,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         elif msg_type == PKT_PENDING_DONE:
             self.handle_pending_done(payload, addr)
 
-    def touch_session(self, addr): 
-        # Actualiza el timestamp de la sesión para evitar timeouts durante la negociación
+    def touch_session(self, addr): # Actualiza el timestamp para evitar timeout mientras hablamos
         if addr in self.reconnect_pending:
             self.reconnect_pending[addr]['timestamp'] = asyncio.get_event_loop().time()
 
@@ -117,46 +115,35 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         except Exception:
             pass
     
-    async def handle_handshake(self, payload, addr, is_response): 
-        # Fase 2 del Handshake: 
-        # 1. Recibe credenciales cifradas con claves efímeras.
-        # 2. Valida la firma de la autoridad (Policía).
-        # 3. Aplica política TOFU (Trust On First Use) para detectar suplantaciones.
-        # 4. Establece la sesión permanente.
-        
-        # 1. Idempotencia: Si ya hay sesión establecida, ignoramos el paquete
-        # NOTA: En renegociaciones reales podríamos querer actualizarla, pero mantenemos tu lógica
-        if addr in self.sessions: 
+    async def handle_handshake(self, payload, addr, is_response): # Lo que ocurre en el handshake
+        if addr in self.sessions:
             return
         
-        # 2. Seguridad de flujo: Debe existir un contexto efímero (Fase 1 previa)
+        # Verificar que tenemos clave efímera establecida
         if addr not in self.ephemeral_keys or 'temp_cipher' not in self.ephemeral_keys[addr]:
             return
         
         try:
-            # Recuperamos el cifrador temporal negociado en la Fase 1
             temp_cipher = self.ephemeral_keys[addr]['temp_cipher']
             offset = 0
             
-            # Validación de longitud mínima (32 key + 12 nonce + algo de cert)
-            if len(payload) < 44: 
+            # Extraer y descifrar el certificado cifrado
+            if len(payload) < 44:  # 32 (pub key) + 12 (nonce) mínimo
                 return
             
-            # EXTRACCIÓN DE DATOS 
-            peer_pub_bytes = payload[offset:offset+32] # Clave pública permanente del DNIe (La identidad criptográfica)
+            peer_pub_bytes = payload[offset:offset+32]
             offset += 32
             
-            nonce = payload[offset:offset+12] 
+            nonce = payload[offset:offset+12]
             offset += 12
             
-            encrypted_cert = payload[offset:] 
+            encrypted_cert = payload[offset:]
             
-            # DESCIFRADO Y AUTENTICACIÓN (AEAD) 
+            # Descifrar el certificado
             try:
-                # Si esto falla, el paquete fue modificado o no viene de quien tiene la clave efímera
                 cert_bytes = temp_cipher.decrypt(nonce, encrypted_cert, None)
             except Exception:
-                # print(f"Error de integridad en handshake desde {addr}")
+                # Error al descifrar: posible ataque o corrupción
                 if addr in self.ephemeral_keys:
                     del self.ephemeral_keys[addr]
                 return
@@ -171,13 +158,9 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                     nombre = "DNIe Desconocido"
             except:
                 nombre = "Error Certificado"
-                if addr in self.ephemeral_keys:
-                    del self.ephemeral_keys[addr]
-                return
             
-            # CÁLCULO DEL SECRETO COMPARTIDO (ECDH PERMANENTE)
             peer_key_obj = x25519.X25519PublicKey.from_public_bytes(peer_pub_bytes) # Obtención de la clave pública del otro usuario
-            shared_secret = self.dnie.private_key.exchange(peer_key_obj) # Secreto compartido que solo conocen los dos usuarios
+            shared_secret = self.dnie.private_key.exchange(peer_key_obj) # Secreto compartido  que solo conocen los dos usuarios, con mi clave privada y la del otro usuario
             session_key = hashlib.blake2s(shared_secret, digest_size=32).digest() # Generación de la clave de sesión
             
             self.sessions[addr] = { # Guardamos la sesión
@@ -186,15 +169,21 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 'state': 'ESTABLISHED'
             }
             
-            # ACTUALIZACIÓN DE BASE DE DATOS (Incluyendo public_key para TOFU)
+            existing_cn = None
+            all_contacts = self.db.get_all_contacts()
+            for cn, info in all_contacts.items():
+                if info.get("ip") == addr[0] and info.get("port") == addr[1]:
+                    existing_cn = cn
+                    break
+            
+            contact_id = existing_cn if existing_cn else nombre
             self.db.add_or_update_contact(
-                nombre, # ID (nombre)
+                contact_id,
                 name=nombre,
                 ip=addr[0],
                 port=addr[1],
                 session_key=session_key.hex(),
-                peer_cert=cert_bytes.hex(),
-                public_key=peer_pub_bytes.hex() # Guardamos para futuro TOFU
+                peer_cert=cert_bytes.hex()
             )
             
             if is_response: # Si somos los que iniciamos el handshake
@@ -214,8 +203,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         except Exception:
             pass
 
-    def handle_message(self, payload, addr): 
-        # Manejamos el mensaje que nos llega 
+    def handle_message(self, payload, addr): # Manejamos el mensaje que nos llega 
         if addr not in self.sessions:
             return
         session = self.sessions[addr]
@@ -242,8 +230,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         except:
             pass
 
-    def enviar_handshake(self, ip, port, cn=None): 
-        # Enviamos el handshake (Lógica original de reconexión rápida)
+    def enviar_handshake(self, ip, port, cn=None): # Enviamos el handshake 
         addr = (ip, port)
 
         if addr in self.sessions:
@@ -255,14 +242,12 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         saved_key = None
         contact_name = None
         
-        # Busqueda de la clave guardada por nombre
         if cn:
             contact_info = self.db.get_contact_info(cn)
             if contact_info:
                 saved_key = contact_info.get("session_key")
                 contact_name = contact_info.get("name", cn)
         
-        # Busqueda de la clave guardada en la base de datos por IP/Puerto
         if not saved_key:
             all_contacts = self.db.get_all_contacts()
             for name, info in all_contacts.items():
@@ -272,7 +257,6 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                         contact_name = info.get("name", name)
                         break
         
-        # Intento de Reconexión Rápida (Protocolo original)
         if saved_key: 
             try:
                 if isinstance(saved_key, str):
@@ -298,12 +282,12 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             except Exception:
                 pass
         
-        # Si falla reconexión -> Handshake Completo (Fase 1)
+        # Fase 1: Enviar clave efímera primero
         self.enviar_clave_efimera(ip, port)
         return False
     
     def enviar_clave_efimera(self, ip, port):
-        # Fase 1: Envía solo la clave pública efímera para establecer canal cifrado
+        """Fase 1: Envía solo la clave pública efímera para establecer canal cifrado"""
         if not self.transport:
             return
         try:
@@ -320,11 +304,11 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             # Enviar solo la clave pública efímera
             packet = struct.pack("B", PKT_EPHEMERAL_KEY) + self.my_cid + public_bytes
             self.transport.sendto(packet, (ip, port))
+            # El certificado se enviará automáticamente cuando reciba la clave efímera del peer
         except Exception:
             pass
 
-    def cerrar_sesion(self, ip, port): 
-        # Cierre de sesión
+    def cerrar_sesion(self, ip, port): # Cerramos sesión
         addr = (ip, port)
         if addr in self.sessions:
             del self.sessions[addr]
@@ -335,17 +319,16 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         if addr in self.pending_sent:
             del self.pending_sent[addr]
 
-    def tiene_sesion(self, ip, port): 
-        # Comprueba si existe una sesión con el contacto
+    def tiene_sesion(self, ip, port): # Comprobamos que haya sesión 
         addr = (ip, port)
         return addr in self.sessions
 
-    def enviar_paquete_credenciales(self, ip, port, tipo): 
-        # Envio de paquete de credenciales al contacto (Fase 2 cifrada)
+    def enviar_paquete_credenciales(self, ip, port, tipo): # Fase 2: Mandamos el certificado CIFRADO
         if not self.transport:
             return
         addr = (ip, port)
         
+        # Verificar que tenemos clave efímera establecida
         if addr not in self.ephemeral_keys or 'temp_cipher' not in self.ephemeral_keys[addr]:
             return
         
@@ -354,9 +337,10 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             temp_cipher = self.ephemeral_keys[addr]['temp_cipher']
             
             # Cifrar el certificado con la clave temporal
-            nonce = os.urandom(12) 
+            nonce = os.urandom(12)
             encrypted_cert = temp_cipher.encrypt(nonce, cert, None)
             
+            # Paquete: tipo | cid | public_key_X25519 | nonce | certificado_cifrado
             packet = (
                 struct.pack("B", tipo) + self.my_cid + 
                 self.dnie.public_bytes + nonce + encrypted_cert
@@ -365,25 +349,22 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         except Exception:
             pass
 
-    def enviar_mensaje(self, ip, port, texto, msg_id=None): 
-        # Envio de mensaje al contacto
+    def enviar_mensaje(self, ip, port, texto, msg_id=None): # Encio del mensaje
         addr = (ip, port)
         if addr not in self.sessions:
             return False
         try:
             cipher = self.sessions[addr]['cipher']
-            nonce = os.urandom(12) 
+            nonce = os.urandom(12)
             msg_data = f"{msg_id}|{texto}" if msg_id else texto
-            ciphertext = cipher.encrypt(nonce, msg_data.encode('utf-8'), None) 
-            
+            ciphertext = cipher.encrypt(nonce, msg_data.encode('utf-8'), None) # Encriptamos con la clave compartida
             packet = struct.pack("B", PKT_MSG) + self.my_cid + nonce + ciphertext
             self.transport.sendto(packet, addr)
             return True
         except:
             return False
 
-    def enviar_ack(self, ip, port, msg_id): 
-        # Envio de ACK al contacto
+    def enviar_ack(self, ip, port, msg_id): # Mandamos ACK cifrado 
         addr = (ip, port)
         if addr not in self.sessions:
             return
@@ -396,8 +377,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         except:
             pass
 
-    def handle_ack(self, payload, addr): 
-        # Procesado del ACK
+    def handle_ack(self, payload, addr): # Manejamos los ack que recibimos
         if addr not in self.sessions:
             return
         session = self.sessions[addr]
@@ -413,55 +393,53 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
         except:
             pass
 
-    def enviar_reconnect_req(self, ip, port): 
-        # Envio de solicitud de reconexión al contacto
+    def enviar_reconnect_req(self, ip, port): # Enviamos el paquete de tipo reconnect request
         if not self.transport:
             return
         packet = struct.pack("B", PKT_RECONNECT_REQ) + self.my_cid
         self.transport.sendto(packet, (ip, port))
 
-    def enviar_reconnect_resp(self, ip, port): 
-        # Envio de respuesta de reconexión al contacto
+    def enviar_reconnect_resp(self, ip, port): # Enviamos el paqeute de tipo reconnct response
         if not self.transport:
             return
         packet = struct.pack("B", PKT_RECONNECT_RESP) + self.my_cid
         self.transport.sendto(packet, (ip, port))
 
     async def handle_reconnect_req(self, payload, addr):
-        # Procesado de solicitud de reconexión
+        # Recibe REQ: si tengo session_key guardada, restauro y respondo si no da error(Evitamos man in the middle)
         all_contacts = self.db.get_all_contacts()
-        for cn, info in all_contacts.items(): 
-            if info.get("ip") == addr[0] and info.get("port") == addr[1] and info.get("session_key"): 
+        for cn, info in all_contacts.items():
+            if info.get("ip") == addr[0] and info.get("port") == addr[1] and info.get("session_key"):
                 try:
                     session_key = bytes.fromhex(info.get("session_key"))
-                    self.sessions[addr] = { 
+                    self.sessions[addr] = {
                         'cipher': ChaCha20Poly1305(session_key),
                         'name': info.get("name", cn),
                         'state': 'ESTABLISHED'
                     }
-                    self.db.set_contact_connected(cn, True) 
-                    self.role[addr] = "responder" 
+                    self.db.set_contact_connected(cn, True)
+                    self.role[addr] = "responder"
                     self.enviar_reconnect_resp(addr[0], addr[1])
-                    if self.callback: 
-                        self.callback(addr, "SESSION_RESTORED_RESP", info.get("name", cn), None) 
+                    if self.callback:
+                        self.callback(addr, "SESSION_RESTORED_RESP", info.get("name", cn), None)
                     return
                 except Exception:
                     pass
 
     async def handle_reconnect_resp(self, payload, addr):
-        # Procesado de respuesta de reconexión
+        # Recibe RESP a mi REQ: confirmo que soy initiator
         if addr in self.reconnect_pending:
             info = self.reconnect_pending.pop(addr)
             cn = info['cn']
             if addr in self.sessions:
-                self.role[addr] = "initiator" 
+                self.role[addr] = "initiator"
                 session = self.sessions[addr]
                 self.db.set_contact_connected(cn, True)
-                if self.callback: 
+                if self.callback:
                     self.callback(addr, "SESSION_RESTORED_INIT", session.get("name", "Unknown"), None)
 
     def enviar_pending_send(self, ip, port):
-        # Envio de paquete de paquetes pendientes
+        # Avisa que voy a enviar pendientes
         if not self.transport:
             return
         try:
@@ -471,7 +449,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             pass
 
     def enviar_pending_done(self, ip, port):
-        # Envio de paquete de paqutes pendienets ya enviados
+        # Avisa que terminé de enviar pendientes
         if not self.transport:
             return
         try:
@@ -481,7 +459,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             pass
 
     async def handle_pending_send(self, payload, addr):
-        # Procesado de paquete de paquetes pendientes
+        # Recibe PENDING_SEND: el peer va a mandar sus pendientes
         if addr not in self.sessions:
             return
         session = self.sessions[addr]
@@ -490,7 +468,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             self.callback(addr, "PEER_SENDING_PENDING", nombre, None)
 
     def handle_pending_done(self, payload, addr):
-        # Procesado de paquete de paquetes pendientes ya enviados
+        # Recibe PENDING_DONE: el peer terminó de mandar sus pendientes
         if addr not in self.sessions:
             return
         session = self.sessions[addr]
@@ -502,20 +480,23 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                 self.callback(addr, "SEND_MY_PENDING", nombre, None)
 
     async def check_reconnect_timeouts(self):
-        # Comprobación de timeouts de reconexión
+        # Comprueba los timeouts de los reconnets
         while True:
             await asyncio.sleep(1)
+            
             current_time = asyncio.get_event_loop().time()
             timeout_addrs = []
             
-            for addr, info in list(self.reconnect_pending.items()): # Recorremos los contactos pendientes de reconexión
-                if current_time - info['timestamp'] > 0.5: # Timeout de 0.5 segundos
+            for addr, info in list(self.reconnect_pending.items()):
+                if current_time - info['timestamp'] > 0.5:
                     timeout_addrs.append(addr)
             
-            for addr in timeout_addrs: # Si hay timeouts
-                info = self.reconnect_pending.pop(addr) # Quitamos el contacto de la lista de pendientes
-                cn = info['cn'] 
+            for addr in timeout_addrs:
+                info = self.reconnect_pending.pop(addr)
+                cn = info['cn']
+                
                 if addr in self.sessions:
-                    del self.sessions[addr] # Quitamos la sesión del contacto
+                    del self.sessions[addr]
+                
                 if self.callback:
-                    self.callback(addr, "RECONNECT_TIMEOUT", cn, None) # Enviamos el callback
+                    self.callback(addr, "RECONNECT_TIMEOUT", cn, None)
