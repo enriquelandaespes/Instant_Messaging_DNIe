@@ -10,15 +10,15 @@ from cryptography.hazmat.backends import default_backend
 import config
 
 # Definición de los diferentes tipos de paquetes que tenemos para los diferentes flujos del protocolo
-PKT_EPHEMERAL_KEY = 0x01      # Fase 1 Handshake: Intercambio de clave pública efímera (X25519)
-PKT_MSG = 0x02                # Mensaje de chat cifrado (Payload de aplicación)
-PKT_ACK = 0x04                # Confirmación de recepción (Acknowledge)
-PKT_RECONNECT_REQ = 0x05      # Solicitud de reconexión rápida (Session Resumption)
-PKT_RECONNECT_RESP = 0x06     # Respuesta de reconexión aceptada
-PKT_PENDING_SEND = 0x07       # Señalización: "Voy a empezar a enviar mensajes pendientes"
-PKT_PENDING_DONE = 0x08       # Señalización: "He terminado de enviar mensajes pendientes"
-PKT_HANDSHAKE_INIT = 0x10     # Fase 2 Handshake: Certificado cifrado del Iniciador
-PKT_HANDSHAKE_RESP = 0x11     # Fase 2 Handshake: Certificado cifrado del Responder
+PKT_EPHEMERAL_KEY = 0x01   # Fase 1 Handshake: Intercambio de clave pública efímera (X25519)
+PKT_MSG = 0x02             # Mensaje de chat cifrado (Payload de aplicación)
+PKT_ACK = 0x04             # Confirmación de recepción (Acknowledge)
+PKT_RECONNECT_REQ = 0x05   # Solicitud de reconexión rápida (Session Resumption)
+PKT_RECONNECT_RESP = 0x06  # Respuesta de reconexión aceptada
+PKT_PENDING_SEND = 0x07    # Señalización: "Voy a empezar a enviar mensajes pendientes"
+PKT_PENDING_DONE = 0x08    # Señalización: "He terminado de enviar mensajes pendientes"
+PKT_HANDSHAKE_INIT = 0x10  # Fase 2 Handshake: Certificado cifrado del Iniciador
+PKT_HANDSHAKE_RESP = 0x11  # Fase 2 Handshake: Certificado cifrado del Responder
 
 class SecureIMProtocol(asyncio.DatagramProtocol): 
 
@@ -156,7 +156,7 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
     async def handle_handshake(self, payload, addr, is_response): 
         # Fase 2 del Handshake: Verificación de identidad y establecimiento de sesión permanente.
         if addr in self.sessions: 
-            pass # Permitimos renegociar sesión si es necesario
+            pass # Permitimos renegociación si es necesario
         
         # Seguridad: Verificar que existe un contexto criptográfico efímero previo
         if addr not in self.ephemeral_keys or 'temp_cipher' not in self.ephemeral_keys[addr]:
@@ -189,56 +189,59 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
                     del self.ephemeral_keys[addr]
                 return
             
-            try:
-                cert_obj = x509.load_der_x509_certificate(cert_bytes, default_backend()) # Carga del certificado
-                
-                # Verificación de autoridad (MODO NO BLOQUEANTE PARA QUE FUNCIONE SIEMPRE)
-                if not self.verificar_firma_autoridad(cert_obj):
-                    # Aquí deberíamos cortar, pero dejamos pasar para asegurar funcionalidad si faltan certs
-                    pass 
-
-                cn_attrs = cert_obj.subject.get_attributes_for_oid(NameOID.COMMON_NAME) # Obtención de información del dni
-                if cn_attrs:
-                    raw = str(cn_attrs[0].value)
-                    nombre = raw.replace("(AUTENTICACIÓN)", "").replace("(Autenticación)", "").replace("(FIRMA)", "").replace("(Firma)", "").strip() # Nos quedamos con el nombre limpio
-                else:
-                    nombre = "DNIe Desconocido"
-            except:
-                nombre = "Error Certificado"
-                if addr in self.ephemeral_keys:
-                    del self.ephemeral_keys[addr]
-                return
+            # --- PRIORIDAD CONEXIÓN: Establecemos sesión ANTES de parsear certificado ---
+            peer_key_obj = x25519.X25519PublicKey.from_public_bytes(peer_pub_bytes)
+            shared_secret = self.dnie.private_key.exchange(peer_key_obj)
+            session_key = hashlib.blake2s(shared_secret, digest_size=32).digest()
             
-            # Comprobación de seguridad TOFU (MODO NO BLOQUEANTE)
-            contact_info = self.db.get_contact_info(nombre)
-            if contact_info:
-                pk_guardada = contact_info.get("public_key")
-                pk_recibida = peer_pub_bytes.hex()
-                if pk_guardada and pk_guardada != pk_recibida:
-                    # Aquí deberíamos cortar si hay ataque, pero dejamos pasar si es solo renegociación
-                    pass
-
-            # CÁLCULO DEL SECRETO COMPARTIDO (ECDH PERMANENTE)
-            peer_key_obj = x25519.X25519PublicKey.from_public_bytes(peer_pub_bytes) # Obtención de la clave pública del otro usuario
-            shared_secret = self.dnie.private_key.exchange(peer_key_obj) # Secreto compartido que solo conocen los dos usuarios
-            session_key = hashlib.blake2s(shared_secret, digest_size=32).digest() # Generación de la clave de sesión
+            # Nombre temporal, se actualizará si el certificado es válido
+            nombre = "Unknown" 
             
-            self.sessions[addr] = { # Guardamos la sesión
+            self.sessions[addr] = {
                 'cipher': ChaCha20Poly1305(session_key), 
                 'name': nombre,
                 'state': 'ESTABLISHED'
             }
-            
-            # ACTUALIZACIÓN DE BASE DE DATOS
-            self.db.add_or_update_contact(
-                nombre, # ID (nombre)
-                name=nombre,
-                ip=addr[0],
-                port=addr[1],
-                session_key=session_key.hex(), 
-                peer_cert=cert_bytes.hex(),
-                public_key=peer_pub_bytes.hex()
-            )
+            # ---------------------------------------------------------------------------
+
+            # PROCESAMIENTO DE CERTIFICADO Y TOFU (Si falla, no rompe la conexión ya creada)
+            try:
+                cert_obj = x509.load_der_x509_certificate(cert_bytes, default_backend())
+                
+                # Verificación de autoridad
+                autoridad_ok = self.verificar_firma_autoridad(cert_obj)
+                
+                cn_attrs = cert_obj.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+                if cn_attrs:
+                    raw = str(cn_attrs[0].value)
+                    nombre_real = raw.replace("(AUTENTICACIÓN)", "").replace("(Autenticación)", "").replace("(FIRMA)", "").replace("(Firma)", "").strip()
+                    
+                    # TOFU CHECK
+                    contact_info = self.db.get_contact_info(nombre_real)
+                    tofu_ok = True
+                    if contact_info:
+                        pk_guardada = contact_info.get("public_key")
+                        pk_recibida = peer_pub_bytes.hex()
+                        if pk_guardada and pk_guardada != pk_recibida:
+                            tofu_ok = False # Ataque detectado
+                    
+                    if tofu_ok:
+                        # Si todo es correcto, actualizamos la sesión con el nombre real
+                        self.sessions[addr]['name'] = nombre_real
+                        nombre = nombre_real
+                        
+                        # Guardamos en DB
+                        self.db.add_or_update_contact(
+                            nombre,
+                            name=nombre,
+                            ip=addr[0],
+                            port=addr[1],
+                            session_key=session_key.hex(), 
+                            peer_cert=cert_bytes.hex(),
+                            public_key=peer_pub_bytes.hex()
+                        )
+            except:
+                pass # Si el certificado falla, seguimos conectados como "Unknown"
             
             if is_response: # Si somos los que iniciamos el handshake
                 self.role[addr] = "initiator" 
