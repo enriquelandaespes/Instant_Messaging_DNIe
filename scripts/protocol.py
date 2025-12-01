@@ -77,34 +77,51 @@ class SecureIMProtocol(asyncio.DatagramProtocol):
             self.reconnect_pending[addr]['timestamp'] = asyncio.get_event_loop().time()
 
     def verificar_firma_autoridad(self, cert_recibido):
-        # Verifica criptográficamente que el certificado recibido ha sido firmado
-        # por la Autoridad de Certificación (AC) del DNIe real.
-        # Requiere el archivo 'ac_dnie_raiz.pem' en el directorio.
-        try:
-            # 1. Cargar el certificado de la "Policía" (AC Raíz)
-            with open("ac_dnie_raiz.pem", "rb") as f:
-                ca_cert_bytes = f.read()
-                ca_cert = x509.load_pem_x509_certificate(ca_cert_bytes, default_backend())
+        # TRUST STORE: Itera sobre una carpeta de certificados de confianza (CA)
+        # e intenta validar la firma con cada uno de ellos.
+        TRUST_DIR ="certificados_autoridad"  # Nombre de tu carpeta con los certificados descargados
+        
+        if not os.path.exists(TRUST_DIR):
+            return False
 
-            # 2. Obtener la clave pública de la Autoridad
-            ca_public_key = ca_cert.public_key()
-
-            # 3. Verificar la firma digital del certificado recibido
-            ca_public_key.verify(
-                cert_recibido.signature,
-                cert_recibido.tbs_certificate_bytes,
-                padding.PKCS1v15(), # Estándar usado en firmas X.509 RSA
-                cert_recibido.signature_hash_algorithm
-            )
-            return True
+        # Recorremos todos los archivos de la carpeta
+        for filename in os.listdir(TRUST_DIR):
+            filepath = os.path.join(TRUST_DIR, filename)
             
-        except FileNotFoundError:
-            print("ERROR CRÍTICO: No se encuentra 'ac_dnie_raiz.pem'. No se puede validar la autoridad.")
-            return False
-        except Exception as e:
-            print(f"ALERTA DE SEGURIDAD: Certificado no emitido por autoridad válida: {e}")
-            return False
+            # Intentamos cargar cada archivo como un certificado
+            try:
+                with open(filepath, "rb") as f:
+                    ca_bytes = f.read()
+                    # Probamos cargar formato PEM y si falla, DER (por si acaso)
+                    try:
+                        ca_cert = x509.load_pem_x509_certificate(ca_bytes, default_backend())
+                    except:
+                        ca_cert = x509.load_der_x509_certificate(ca_bytes, default_backend())
 
+                # Obtenemos la clave pública de esta Autoridad
+                ca_public_key = ca_cert.public_key()
+
+                # --- MOMENTO DE LA VERDAD ---
+                # Intentamos verificar la firma. Si no lanza error, ¡BINGO!
+                try:
+                    ca_public_key.verify(
+                        cert_recibido.signature,
+                        cert_recibido.tbs_certificate_bytes,
+                        padding.PKCS1v15(),
+                        cert_recibido.signature_hash_algorithm
+                    )
+                    # Si llegamos aquí, es que ESTE certificado validó la firma
+                    return True  # Éxito
+                except Exception:
+                    # Si falla, simplemente probamos con el siguiente archivo
+                    continue 
+
+            except Exception:
+                # Si el archivo no es un certificado válido, lo ignoramos
+                continue
+
+        # Si termina el bucle y ninguno sirvió
+        return False
     def handle_ephemeral_key(self, payload, addr): 
         # Fase 1 del Handshake: Procesamiento de la clave pública efímera (ECDH).
         try:
