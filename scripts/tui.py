@@ -427,69 +427,53 @@ class ChatTUI: # Clase principal de la interfaz de usuario (TUI = Text User Inte
 
     def update_ascii_suggestions(self):  # Actualiza las sugerencias de ASCII Art en tiempo real
         current_text = self.w_ascii.text.strip().lower()  # Obtenemos el texto actual (minúsculas, sin espacios)
-        
         if not current_text:  
             self.w_suggestions.text = ""
             return
         
-        # Buscamos claves de ASCII Art que contengan el texto escrito
-        matches = [key for key in self.ascii_art.keys() if current_text in key.lower()]
+        matches = [key for key in self.ascii_art.keys() if current_text in key.lower()] # Buscamos claves de ASCII Art que contengan el texto escrito
         
         if matches:  # Si hay coincidencias, mostramos las primeras 5
             suggestions_text = "  Sugerencias: " + ", ".join(matches[:5])
-            if len(matches) > 5:  # Si hay más de 5, indicamos cuántas más hay
-                suggestions_text += f" ... (+{len(matches)-5} más)"
             self.w_suggestions.text = suggestions_text
         else:  # Si no hay coincidencias, mostramos mensaje
             self.w_suggestions.text = "  Sin coincidencias"
 
-    def refresh_ui(self):  # Actualiza la interfaz de usuario (panel de contactos)
-        # Esta función regenera la lista de contactos visible en el panel izquierdo
-        # Se llama cada vez que hay cambios: nuevos mensajes, cambios de estado, etc.
-        
+    def refresh_ui(self):  # Actualiza la interfaz de usuario
         lines = []  # Lista de líneas de texto para el panel de contactos
-        
-        # === PESTAÑAS ESPECIALES (siempre al principio) ===
         special_contacts = ["__AYUDA__", "__MI_CUENTA__"]  # Pestañas de sistema
         
-        for special in special_contacts:
-            # Asignar icono y nombre de visualización
+        for special in special_contacts: # Asignar icono y nombre de visualización
             if special == "__AYUDA__":
-                icon = "❓"  # Icono de interrogación
+                icon = "❓"  
                 display = "Ayuda"
             elif special == "__MI_CUENTA__":
-                icon = "👤"  # Icono de persona
+                icon = "👤" 
                 display = "Mi Cuenta"
             
-            # Marcar con flecha (➞) si es el contacto seleccionado actualmente
-            prefix = "➞ " if self.current_cn == special else "  "
+            prefix = "➞ " if self.current_cn == special else "  " # Marcar con flecha (➞) si es el contacto seleccionado actualmente
             lines.append(f"{prefix}{icon} {display}")
         
-        # === SEPARADOR VISUAL (solo si hay contactos reales) ===
-        if self.contact_keys:  # Si hay al menos un contacto
-            lines.append("")  # Línea en blanco
-            lines.append("─" * 32)  # Línea horizontal de separación
-            lines.append("")  # Otra línea en blanco
+        if self.contact_keys:  # Separador entre pestañas especiales y contactos reales
+            lines.append("")  
+            lines.append("─" * 32)  
+            lines.append("") 
         
-        # === LISTA DE CONTACTOS REALES ===
-        for k in self.contact_keys:  # Iteramos por cada contacto (k = contact key = identificador)
+        for k in self.contact_keys:  # Iteramos por cada contacto
             info = self.db.get_contact_info(k)  # Obtenemos info de la base de datos
-            if not info:  # Si no hay info, saltamos este contacto (no debería pasar)
+            if not info:  # Si no hay info, saltamos este contacto
                 continue
             
-            # Determinamos el icono según el estado de conexión
             if info.get("is_connected"):  # Conexión activa (sesión Noise IK abierta)
-                icon = "🟢"  # Verde: conectado
+                icon = "🟢"
             elif info.get("session_key"):  # Hay sesión guardada pero no conectado ahora
-                icon = "🔴"  # Rojo: desconectado (pero puede reconectar)
+                icon = "🔴" 
             else:  # No hay sesión guardada
-                icon = "🟡"  # Amarillo: disponible (nunca conectado)
+                icon = "🟡"
             
-            # Marcar contacto actual con flecha
-            prefix = "➞ " if k == self.current_cn else "  "
+            prefix = "➞ " if k == self.current_cn else "  " # Marcar contacto actual con flecha
             
-            # === FORMATEO DEL NOMBRE (igual que en get_chat_title) ===
-            full_name = info.get("name", k)
+            full_name = info.get("name", k) # Nombre completo desde la base de datos
             name_parts = full_name.split()
             if len(name_parts) >= 2:  # Extraer nombre + primer apellido
                 if "," in full_name:  # Formato certificado: "APELLIDOS, NOMBRE"
@@ -501,152 +485,104 @@ class ChatTUI: # Clase principal de la interfaz de usuario (TUI = Text User Inte
                     display_name = f"{name_parts[0]} {name_parts[1]}"
             else:
                 display_name = full_name
-            
-            # Añadir puerto si está en el identificador
-            if ":" in k:
-                port = k.split(":")[1]
-                display_name = f"{display_name} [:{port}]"
-            
-            # === INDICADOR DE MENSAJES NO LEÍDOS ===
+
             unread = self.db.get_unread_count(k, self.my_nick)  # Cuenta mensajes sin leer
             if unread > 0:  # Si hay mensajes sin leer, mostrar campana 🔔
                 lines.append(f"{prefix}{icon} {display_name} 🔔({unread})")
             else:  # Sin mensajes pendientes
                 lines.append(f"{prefix}{icon} {display_name}")
         
-        # === FINALIZACIÓN: ACTUALIZAR WIDGET Y FORZAR REDIBUJADO ===
         self.w_contacts.text = "\n".join(lines)  # Unimos todas las líneas con saltos de línea
         self.app.invalidate()  # Forzamos redibujado de la aplicación prompt_toolkit
 
-    def move_selection(self, delta):  # Navega entre contactos (delta = +1 o -1)
-        # Esta función se ejecuta cuando el usuario presiona ↑ o ↓
+    def move_selection(self, delta):  # Navega entre contactos (arriba/abajo)
+        all_items = ["__AYUDA__", "__MI_CUENTA__"] + self.contact_keys # Crear lista completa: pestañas especiales + contactos reales
         
-        # Crear lista completa: pestañas especiales + contactos reales
-        all_items = ["__AYUDA__", "__MI_CUENTA__"] + self.contact_keys
-        
-        if not all_items:  # Si no hay nada (no debería pasar), no hacer nada
+        if not all_items:  # Si no hay nada, no hacer nada
             return
         
-        # Obtener índice actual del contacto seleccionado
-        idx = all_items.index(self.current_cn) if self.current_cn in all_items else 0
-        
-        # Calcular nuevo índice (con wrap-around: si llegamos al final, volvemos al principio)
-        new_idx = (idx + delta) % len(all_items)  # Módulo para ciclar
-        
-        # Actualizar contacto actual
-        self.current_cn = all_items[new_idx]
-        
-        # Resetear scroll al cambiar de contacto (siempre mostrar mensajes más recientes)
-        self.scroll_offset = 0
-        
-        # Si cambiamos a un contacto real (no pestaña especial), marcar mensajes como leídos
-        if self.current_cn not in ["__AYUDA__", "__MI_CUENTA__"]:
+        idx = all_items.index(self.current_cn) if self.current_cn in all_items else 0 # Obtener índice actual del contacto seleccionado
+        new_idx = (idx + delta) % len(all_items) # Calcular nuevo índice (con wrap-around: si llegamos al final, volvemos al principio)
+        self.current_cn = all_items[new_idx] # Actualizar contacto actual
+        self.scroll_offset = 0 # Resetear scroll al cambiar de contacto
+
+        if self.current_cn not in ["__AYUDA__", "__MI_CUENTA__"]: # Si cambiamos a un contacto, marcar mensajes como leídos
             self.db.mark_messages_as_read(self.current_cn, self.my_nick)
         
         self.refresh_ui()  # Actualizar interfaz para reflejar el cambio
 
-    def add_peer(self, name, ip, port):  # Añade un nuevo contacto a la lista (llamado desde discovery mDNS)
-        # Esta función evita duplicados buscando primero por IP:puerto, luego por nombre
+    def add_peer(self, name, ip, port):  # Añade un nuevo contacto a la lista evitando duplicados
         
-        existing_cn = None  # Identificador de contacto existente (si lo hay)
+        existing_cn = None  # Identificador de contacto existente
         all_contacts = self.db.get_all_contacts()  # Obtenemos todos los contactos de la BD
         
-        # === BÚSQUEDA 1: POR IP Y PUERTO ===
-        for cn, info in all_contacts.items():
+        for cn, info in all_contacts.items(): # Primera búsqueda: por IP y puerto
             if info.get("ip") == ip and info.get("port") == port:  # Coincidencia exacta
                 existing_cn = cn  # Encontramos un contacto con la misma IP:puerto
                 break
-        
-        # === BÚSQUEDA 2: POR NOMBRE (solo si no encontramos por IP:puerto) ===
-        if not existing_cn:
+        if not existing_cn: # Segunda búsqueda: por nombre
             target_name = name.strip().lower()  # Normalizamos el nombre (minúsculas, sin espacios)
             for cn, info in all_contacts.items():
                 db_name = info.get("name", "").strip().lower()  # Normalizamos nombre en BD
                 if db_name == target_name:  # Coincidencia de nombre
                     existing_cn = cn
                     break
-        
-        # === DECISIÓN: ACTUALIZAR O CREAR NUEVO CONTACTO ===
+
         if existing_cn:  # Si encontramos un contacto existente
             contact_id = existing_cn
-            # Actualizamos la información (por si cambió IP, puerto, etc.)
-            self.db.add_or_update_contact(existing_cn, name=name, ip=ip, port=port)
+            self.db.add_or_update_contact(existing_cn, name=name, ip=ip, port=port)  # Actualizamos la información (por si cambió IP, puerto, etc.)
         else:  # Si es un contacto completamente nuevo
             contact_id = f"{ip}:{port}"  # Usamos "IP:puerto" como identificador
             self.db.add_or_update_contact(contact_id, name=name, ip=ip, port=port)  # Creamos en BD
-            if contact_id not in self.contact_keys:  # Si no está en la lista de UI
-                self.contact_keys.append(contact_id)  # Lo añadimos
-                self.contact_keys.sort()  # Mantenemos lista ordenada
+            if contact_id not in self.contact_keys:  # Si no está en la lista de UI lo añadimos
+                self.contact_keys.append(contact_id)  
+                self.contact_keys.sort()  
             if not self.current_cn:  # Si no hay contacto seleccionado aún
-                self.current_cn = contact_id  # Seleccionamos este automáticamente
+                self.current_cn = contact_id
         
         self.refresh_ui()  # Actualizamos la interfaz para mostrar el nuevo/actualizado contacto
 
     def on_protocol_msg(self, addr, text, real_cn, msg_id=None):  # Callback del protocolo: maneja eventos de red
-        # Esta función es llamada por protocol.py cuando ocurre un evento importante:
-        # - Handshake completado
-        # - Mensaje recibido
-        # - ACK recibido
-        # - Error de descifrado
-        # - Timeout de reconexión
-        # Es el "pegamento" entre la capa de red (protocol.py) y la UI (tui.py)
-        
-        # === EVENTO ESPECIAL: SESIONES LISTAS (al iniciar la aplicación) ===
         if text == "SESSIONS_READY":  # Señal de que protocol.py cargó todas las sesiones de la BD
             asyncio.create_task(self.auto_connect_and_send_all())  # Intentar reconectar con todos
             return
         
         if addr is None:  # Si no hay dirección, no podemos procesar el evento
             return
-        
-        # === IDENTIFICACIÓN DEL CONTACTO ===
-        # Intentamos identificar al contacto de 3 formas: por IP:puerto, por nombre, o crear nuevo
+
         contact_id = None
         all_contacts = self.db.get_all_contacts()
         
-        # Búsqueda 1: Por dirección IP y puerto (más confiable)
-        for cn, info in all_contacts.items():
+        
+        for cn, info in all_contacts.items(): # Búsqueda 1: Por dirección IP y puerto
             if info.get("ip") == addr[0] and info.get("port") == addr[1]:
                 contact_id = cn
                 break
-        
-        # Búsqueda 2: Por nombre (real_cn viene del certificado o mDNS)
-        if not contact_id:
+        if not contact_id: # Búsqueda 2: Por nombre
             for cn, info in all_contacts.items():
                 if info.get("name") == real_cn:
                     contact_id = cn
                     break
-        
-        # Búsqueda 3: Si no existe, usar el nombre real como identificador
-        if not contact_id:
+        if not contact_id: # Búsqueda 3: Si no existe, usar el nombre real como identificador
             contact_id = real_cn
-        
-        # Si este contacto tenía un handshake pendiente, quitarlo del conjunto
-        if contact_id in self.pending_handshakes:
+        if contact_id in self.pending_handshakes: # Si este contacto tenía un handshake pendiente, quitarlo del conjunto
             self.pending_handshakes.discard(contact_id)  # Ya no está "conectando..."
         
-        # Actualizar o crear el contacto en la base de datos
-        if contact_id in all_contacts:  # Si ya existía
+        if contact_id in all_contacts: # Actualizar o crear el contacto en la base de datos Si ya existía
             self.db.add_or_update_contact(contact_id, ip=addr[0], port=addr[1])  # Actualizar IP/puerto
         else:  # Si es nuevo
             self.db.add_or_update_contact(contact_id, name=real_cn, ip=addr[0], port=addr[1])  # Crear nuevo
         
-        # Añadir a la lista de contactos de la UI si no está
-        if contact_id not in self.contact_keys:
+        if contact_id not in self.contact_keys: # Añadir a la lista de contactos de la UI si no está
             self.contact_keys.append(contact_id)
             self.contact_keys.sort()
         
         ts = datetime.now().strftime("%H:%M")  # Timestamp para mensajes del sistema
         
-        # === PROCESAMIENTO DE EVENTOS SEGÚN EL TIPO DE MENSAJE ===
-        
-        # EVENTO 1: HANDSHAKE COMPLETADO (iniciador o respondedor)
-        if text in ["HANDSHAKE_OK_INIT", "HANDSHAKE_OK_RESP"]:
-            self.db.set_contact_connected(contact_id, True)  # Marcar como conectado en BD
-            
-            # Si es la primera conversación con este contacto, mostrar mensaje de sistema
-            msgs = self.db.get_history(contact_id)
-            user_msgs = [m for m in msgs if m.get('sender') != "Sys"]  # Filtrar mensajes de sistema
+        if text in ["HANDSHAKE_OK_INIT", "HANDSHAKE_OK_RESP"]: # EVENTO 1: HANDSHAKE COMPLETADO (iniciador o respondedor)
+            self.db.set_contact_connected(contact_id, True) 
+            msgs = self.db.get_history(contact_id) 
+            user_msgs = [m for m in msgs if m.get('sender') != "Sys"]
             if len(user_msgs) == 0:  # Primera vez que hablamos con este contacto
                 self.db.add_message(contact_id, "Sys", "🔒 Conexión segura establecida", "system", ts)
             
